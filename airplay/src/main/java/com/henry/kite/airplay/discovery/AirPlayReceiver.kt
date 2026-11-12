@@ -28,11 +28,24 @@ data class AirPlayReceiver(
     val hasAudioOnlyService: Boolean = false,
     /** Every TXT key, kept so unparsed fields stay inspectable while debugging. */
     val txtRecords: Map<String, String> = emptyMap(),
+    /** How this receiver was discovered (mDNS, BLE, saved cache probe, or manual IP). */
+    val discoverySource: DiscoverySource = DiscoverySource.MDNS,
 ) {
     /** Stable key for persisting credentials; falls back to host:port if no deviceid. */
     val stableId: String get() = deviceId ?: "${address.hostAddress}:$port"
 
-    val displayModel: String get() = model ?: "Unknown model"
+    /** True when the receiver identifies as a Roku TV or Roku streaming player. */
+    val isRoku: Boolean
+        get() = listOfNotNull(
+            name,
+            model,
+            txtRecords["am"],
+            txtRecords["manufacturer"],
+            txtRecords["osinfo"],
+        ).any { it.contains("roku", ignoreCase = true) }
+
+    val displayModel: String
+        get() = model ?: if (isRoku) "Roku AirPlay" else "Unknown model"
 
     /** Whether this receiver can accept a screen mirroring session at all. */
     val supportsMirroring: Boolean get() = !isAudioOnly && features.supportsScreenMirroring
@@ -54,6 +67,7 @@ data class AirPlayReceiver(
         isAudioOnly = isAudioOnly && other.isAudioOnly,
         hasAudioOnlyService = hasAudioOnlyService || other.isAudioOnly || other.hasAudioOnlyService,
         txtRecords = if (txtRecords.size >= other.txtRecords.size) txtRecords else other.txtRecords,
+        discoverySource = if (discoverySource == DiscoverySource.MDNS) discoverySource else other.discoverySource,
     )
 
     /**
@@ -78,6 +92,13 @@ data class AirPlayReceiver(
 
     override fun toString(): String = "$name ($displayModel) at ${address.hostAddress}:$port via $pairingPath" +
         if (isAudioOnly) " [audio only]" else ""
+}
+
+enum class DiscoverySource {
+    MDNS,
+    BLE,
+    SAVED_PROBE,
+    MANUAL_IP,
 }
 
 enum class PairingPath {

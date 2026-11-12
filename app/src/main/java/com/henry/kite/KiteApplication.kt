@@ -6,22 +6,44 @@ import android.app.NotificationManager
 import android.os.Build
 import com.henry.kite.airplay.discovery.ReceiverDiscovery
 import com.henry.kite.airplay.session.CredentialStore
+import com.henry.kite.audio.AudioRoutingController
 import com.henry.kite.data.DataStoreCredentialStore
 import com.henry.kite.settings.SettingsRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 /**
- * Manual dependency wiring. Three singletons is not worth a DI framework here.
+ * Manual dependency wiring. Singletons are light enough without a DI framework.
  */
 class KiteApplication : Application() {
 
     val credentialStore: CredentialStore by lazy { DataStoreCredentialStore(this) }
     val discovery: ReceiverDiscovery by lazy { ReceiverDiscovery(this) }
     val settingsRepository: SettingsRepository by lazy { SettingsRepository(this) }
+    val audioRouting: AudioRoutingController by lazy { AudioRoutingController(this) }
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
         super.onCreate()
         com.henry.kite.airplay.discovery.WifiNetworkResolver.init(this)
         createNotificationChannel()
+        appScope.launch {
+            settingsRepository.settings
+                .map { settings ->
+                    settings.knownEndpoints.mapNotNull { entry ->
+                        val parts = entry.split(":")
+                        val host = parts.getOrNull(0)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                        val port = parts.getOrNull(1)?.toIntOrNull() ?: DEFAULT_PORT
+                        host to port
+                    }
+                }
+                .collect { endpoints ->
+                    discovery.setKnownEndpoints(endpoints)
+                }
+        }
     }
 
     private fun createNotificationChannel() {
@@ -40,5 +62,6 @@ class KiteApplication : Application() {
 
     companion object {
         const val CHANNEL_ID_MIRRORING = "mirroring"
+        private const val DEFAULT_PORT = 7_000
     }
 }

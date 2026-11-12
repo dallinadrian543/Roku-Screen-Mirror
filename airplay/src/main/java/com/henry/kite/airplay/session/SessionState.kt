@@ -40,6 +40,14 @@ sealed interface SessionState {
         val kilobitsPerSecond: Long = 0,
     ) : SessionState
 
+    /** Auto-reconnecting after a transient network interruption. */
+    data class Reconnecting(
+        val receiver: AirPlayReceiver,
+        val attempt: Int,
+        val maxAttempts: Int,
+        val reason: String,
+    ) : SessionState
+
     data class Failed(
         val receiver: AirPlayReceiver?,
         val reason: String,
@@ -59,6 +67,7 @@ val SessionState.activeReceiver: AirPlayReceiver?
         is SessionState.SettingUp -> receiver
         is SessionState.Mirroring -> receiver
         is SessionState.StreamingAudio -> receiver
+        is SessionState.Reconnecting -> receiver
         is SessionState.Failed -> null
         SessionState.Idle -> null
     }

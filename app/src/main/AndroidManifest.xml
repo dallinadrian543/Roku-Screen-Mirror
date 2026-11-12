@@ -43,6 +43,7 @@
       AudioRecord.build() throws.
     -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <!--
       Doze defers work and parks the Wi-Fi radio, which shows up as multi-second
@@ -54,13 +55,14 @@
     <application
         android:name=".KiteApplication"
         android:allowBackup="false"
+        android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Kite"
         android:localeConfig="@xml/locales_config"
-        tools:targetApi="34">
+        tools:targetApi="36">
 
         <!--
           Dialog-style receiver picker opened from the Quick Settings tile:

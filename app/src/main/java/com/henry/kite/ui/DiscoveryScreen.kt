@@ -7,37 +7,55 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AddLink
+import androidx.compose.material.icons.outlined.BrightnessAuto
+import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.LightMode
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.StopCircle
+import androidx.compose.material.icons.outlined.VideoCall
 import androidx.compose.material.icons.outlined.WifiFind
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -45,29 +63,59 @@ import com.henry.kite.R
 import com.henry.kite.airplay.discovery.AirPlayReceiver
 import com.henry.kite.airplay.session.SessionState
 import com.henry.kite.airplay.session.activeReceiver
+import com.henry.kite.audio.AudioRoutingState
+import com.henry.kite.settings.MirrorSettings
+import com.henry.kite.settings.ThemeMode
+import com.henry.kite.ui.components.AudioRoutingActions
+import com.henry.kite.ui.components.AudioRoutingSheet
+import com.henry.kite.ui.components.ManualIpDialog
 import com.henry.kite.ui.components.StatusPanel
 import com.henry.kite.ui.components.receiverItems
 import com.henry.kite.vm.DiscoveryUiState
 
+@Suppress("LongParameterList")
+data class DiscoveryActions(
+    val onStartMirroring: (AirPlayReceiver) -> Unit,
+    val onReceiverLongPress: (AirPlayReceiver) -> Unit,
+    val onStopMirroring: () -> Unit,
+    val onRetry: (AirPlayReceiver) -> Unit,
+    val onDismissError: () -> Unit,
+    val onRefreshDiscovery: () -> Unit,
+    val onConnectManualIp: (host: String, port: Int, onDone: () -> Unit) -> Unit,
+    val onClearManualError: () -> Unit,
+    val onToggleVideoCallMode: () -> Unit,
+    val onToggleMixMic: (Boolean) -> Unit,
+    val onSelectMicDevice: (Int) -> Unit,
+    val onSelectOutputDevice: (Int) -> Unit,
+    val onOpenAndroidSoundSettings: () -> Unit,
+    val onOpenBluetoothSettings: () -> Unit,
+    val onCycleThemeMode: () -> Unit,
+    val onOpenSettings: () -> Unit,
+)
+
+@Suppress("LongParameterList")
+data class DiscoveryScreenState(
+    val uiState: DiscoveryUiState,
+    val sessionState: SessionState,
+    val settings: MirrorSettings,
+    val audioRoutingState: AudioRoutingState,
+    val micSilencedByCall: Boolean,
+    val manualConnectBusy: Boolean,
+    val manualConnectError: String?,
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DiscoveryScreen(
-    uiState: DiscoveryUiState,
-    sessionState: SessionState,
-    onStartMirroring: (AirPlayReceiver) -> Unit,
-    /** Long-press on a receiver opens its action menu (mirror / audio only). */
-    onReceiverLongPress: (AirPlayReceiver) -> Unit,
-    onStopMirroring: () -> Unit,
-    onOpenSettings: () -> Unit,
-) {
+fun DiscoveryScreen(state: DiscoveryScreenState, actions: DiscoveryActions) {
     val appBarState = rememberTopAppBarState()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(appBarState)
+    var showManualIpDialog by remember { mutableStateOf(false) }
+    var showAudioSheet by remember { mutableStateOf(false) }
 
-    // Any non-idle, non-failed state means a session is mid-flight.
+    val sessionState = state.sessionState
+    val uiState = state.uiState
     val isBusy = sessionState !is SessionState.Idle && sessionState !is SessionState.Failed
 
-    // The receiver of a running session sorts to the top: returning to the app
-    // mid-cast, the thing the user is connected to is the first thing they see.
     val activeReceiverId = sessionState.activeReceiver?.stableId
     val orderedReceivers = remember(uiState.receivers, activeReceiverId) {
         if (activeReceiverId == null) {
@@ -83,7 +131,44 @@ fun DiscoveryScreen(
             LargeTopAppBar(
                 title = { Text(stringResource(R.string.discovery_title)) },
                 actions = {
-                    IconButton(onClick = onOpenSettings) {
+                    IconButton(
+                        onClick = actions.onRefreshDiscovery,
+                        modifier = Modifier.testTag("refresh_discovery_button"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Refresh,
+                            contentDescription = stringResource(R.string.action_refresh),
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            actions.onClearManualError()
+                            showManualIpDialog = true
+                        },
+                        modifier = Modifier.testTag("manual_ip_button"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.AddLink,
+                            contentDescription = stringResource(R.string.action_manual_ip),
+                        )
+                    }
+                    IconButton(
+                        onClick = actions.onCycleThemeMode,
+                        modifier = Modifier.testTag("theme_toggle_button"),
+                    ) {
+                        Icon(
+                            imageVector = when (state.settings.themeMode) {
+                                ThemeMode.DARK -> Icons.Outlined.DarkMode
+                                ThemeMode.LIGHT -> Icons.Outlined.LightMode
+                                ThemeMode.SYSTEM -> Icons.Outlined.BrightnessAuto
+                            },
+                            contentDescription = stringResource(R.string.action_theme_toggle),
+                        )
+                    }
+                    IconButton(
+                        onClick = actions.onOpenSettings,
+                        modifier = Modifier.testTag("settings_button"),
+                    ) {
                         Icon(
                             imageVector = Icons.Outlined.Settings,
                             contentDescription = stringResource(R.string.settings_open),
@@ -96,12 +181,10 @@ fun DiscoveryScreen(
         bottomBar = {
             SessionControls(
                 sessionState = sessionState,
-                onStopMirroring = onStopMirroring,
+                onStopMirroring = actions.onStopMirroring,
             )
         },
     ) { padding ->
-        // Same M3 center-aligned pattern as the settings screen: capped and
-        // centered on medium+ windows, untouched on phones.
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
             LazyColumn(
                 contentPadding = PaddingValues(
@@ -125,10 +208,24 @@ fun DiscoveryScreen(
                         exit = fadeOut() + shrinkVertically(),
                     ) {
                         Column {
-                            StatusPanel(sessionState)
+                            StatusPanel(
+                                state = sessionState,
+                                micSilencedNotice = state.micSilencedByCall,
+                                onRetry = actions.onRetry,
+                                onDismissError = actions.onDismissError,
+                            )
                             Spacer(Modifier.height(12.dp))
                         }
                     }
+                }
+
+                item {
+                    QuickControlsRow(
+                        videoCallMode = state.settings.videoCallMode,
+                        activeOutputName = state.audioRoutingState.activeCommunicationDeviceName,
+                        onToggleVideoCallMode = actions.onToggleVideoCallMode,
+                        onOpenAudioRouting = { showAudioSheet = true },
+                    )
                 }
 
                 item {
@@ -144,8 +241,8 @@ fun DiscoveryScreen(
                     receivers = orderedReceivers,
                     pairedIds = uiState.pairedIds,
                     enabled = !isBusy,
-                    onSelect = onStartMirroring,
-                    onLongPress = onReceiverLongPress,
+                    onSelect = actions.onStartMirroring,
+                    onLongPress = actions.onReceiverLongPress,
                 )
 
                 if (uiState.receivers.isEmpty()) {
@@ -153,22 +250,102 @@ fun DiscoveryScreen(
                         EmptyState(
                             isSearching = uiState.isSearching,
                             error = uiState.discoveryError,
+                            onConnectByIp = {
+                                actions.onClearManualError()
+                                showManualIpDialog = true
+                            },
                         )
                     }
                 }
             }
         }
     }
+
+    if (showManualIpDialog) {
+        ManualIpDialog(
+            busy = state.manualConnectBusy,
+            error = state.manualConnectError,
+            onConnect = { host, port ->
+                actions.onConnectManualIp(host, port) {
+                    showManualIpDialog = false
+                }
+            },
+            onDismiss = { showManualIpDialog = false },
+        )
+    }
+
+    if (showAudioSheet) {
+        AudioRoutingSheet(
+            audioRoutingState = state.audioRoutingState,
+            selectedMicId = state.settings.preferredMicDeviceId,
+            selectedOutputId = state.settings.preferredOutputDeviceId,
+            mixMicInCalls = state.settings.mixMicrophoneInCalls,
+            actions = AudioRoutingActions(
+                onSelectOutputDevice = actions.onSelectOutputDevice,
+                onSelectMicDevice = actions.onSelectMicDevice,
+                onToggleMixMic = actions.onToggleMixMic,
+                onOpenAndroidSoundSettings = actions.onOpenAndroidSoundSettings,
+                onOpenBluetoothSettings = actions.onOpenBluetoothSettings,
+                onDismiss = { showAudioSheet = false },
+            ),
+        )
+    }
 }
 
 @Composable
-private fun EmptyState(isSearching: Boolean, error: String?) {
+private fun QuickControlsRow(
+    videoCallMode: Boolean,
+    activeOutputName: String?,
+    onToggleVideoCallMode: () -> Unit,
+    onOpenAudioRouting: () -> Unit,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+    ) {
+        FilterChip(
+            selected = videoCallMode,
+            onClick = onToggleVideoCallMode,
+            label = { Text(stringResource(R.string.call_mode_chip)) },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Outlined.VideoCall,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+            },
+            modifier = Modifier.testTag("video_call_mode_chip"),
+        )
+        AssistChip(
+            onClick = onOpenAudioRouting,
+            label = {
+                Text(
+                    activeOutputName ?: stringResource(R.string.audio_routing_chip),
+                    maxLines = 1,
+                )
+            },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Outlined.Mic,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+            },
+            modifier = Modifier.testTag("audio_routing_chip"),
+        )
+    }
+}
+
+@Composable
+private fun EmptyState(isSearching: Boolean, error: String?, onConnectByIp: () -> Unit) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 64.dp, start = 24.dp, end = 24.dp),
+            .padding(top = 48.dp, start = 24.dp, end = 24.dp),
     ) {
         Icon(
             imageVector = Icons.Outlined.WifiFind,
@@ -194,13 +371,26 @@ private fun EmptyState(isSearching: Boolean, error: String?) {
                 textAlign = TextAlign.Center,
             )
         }
+        OutlinedButton(
+            onClick = onConnectByIp,
+            modifier = Modifier
+                .padding(top = 8.dp)
+                .testTag("empty_manual_ip_button"),
+        ) {
+            Icon(Icons.Outlined.AddLink, contentDescription = null)
+            Text(
+                text = stringResource(R.string.action_manual_ip),
+                modifier = Modifier.padding(start = 8.dp),
+            )
+        }
     }
 }
 
-/** Only the stop button now; encoder options live in [SettingsScreen]. */
 @Composable
 private fun SessionControls(sessionState: SessionState, onStopMirroring: () -> Unit) {
-    val isMirroring = sessionState is SessionState.Mirroring
+    val isActive = sessionState is SessionState.Mirroring ||
+        sessionState is SessionState.StreamingAudio ||
+        sessionState is SessionState.Reconnecting
 
     Column(
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -210,7 +400,7 @@ private fun SessionControls(sessionState: SessionState, onStopMirroring: () -> U
             .padding(horizontal = 20.dp, vertical = 16.dp),
     ) {
         AnimatedVisibility(
-            visible = isMirroring,
+            visible = isActive,
             enter = fadeIn() + expandVertically(
                 spring(
                     dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -228,7 +418,8 @@ private fun SessionControls(sessionState: SessionState, onStopMirroring: () -> U
                 modifier = Modifier
                     .widthIn(max = 640.dp)
                     .fillMaxWidth()
-                    .height(56.dp),
+                    .height(56.dp)
+                    .testTag("stop_casting_button"),
             ) {
                 Icon(Icons.Outlined.StopCircle, contentDescription = null)
                 Spacer(Modifier.height(0.dp))

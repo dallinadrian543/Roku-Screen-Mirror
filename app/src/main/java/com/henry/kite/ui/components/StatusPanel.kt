@@ -29,25 +29,28 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.henry.kite.R
+import com.henry.kite.airplay.discovery.AirPlayReceiver
 import com.henry.kite.airplay.session.SessionState
 
-/**
- * Session status strip above the receiver list.
- *
- * Contents cross-fade through [AnimatedContent] so a state change reads as one
- * surface updating rather than a row being swapped out.
- */
 @Composable
-fun StatusPanel(state: SessionState, modifier: Modifier = Modifier) {
+fun StatusPanel(
+    state: SessionState,
+    modifier: Modifier = Modifier,
+    micSilencedNotice: Boolean = false,
+    onRetry: ((AirPlayReceiver) -> Unit)? = null,
+    onDismissError: (() -> Unit)? = null,
+) {
     val isError = state is SessionState.Failed
 
     Surface(
@@ -57,7 +60,9 @@ fun StatusPanel(state: SessionState, modifier: Modifier = Modifier) {
         } else {
             MaterialTheme.colorScheme.secondaryContainer
         },
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("status_panel"),
     ) {
         AnimatedContent(
             targetState = state,
@@ -67,13 +72,54 @@ fun StatusPanel(state: SessionState, modifier: Modifier = Modifier) {
             },
             label = "statusPanel",
         ) { current ->
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-            ) {
-                StatusLeading(current)
-                Spacer(Modifier.size(16.dp))
-                StatusText(current, Modifier.weight(1f))
+            Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StatusLeading(current)
+                    Spacer(Modifier.size(16.dp))
+                    StatusText(current, Modifier.weight(1f))
+                }
+                if (micSilencedNotice &&
+                    (current is SessionState.Mirroring || current is SessionState.StreamingAudio)
+                ) {
+                    Text(
+                        text = stringResource(R.string.mic_silenced_notice),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f),
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+                if (current is SessionState.Failed && (onRetry != null || onDismissError != null)) {
+                    Row(
+                        horizontalArrangement = Arrangement.End,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                    ) {
+                        if (onDismissError != null) {
+                            TextButton(
+                                onClick = onDismissError,
+                                modifier = Modifier.testTag("dismiss_error_button"),
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.error_dismiss),
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                            }
+                        }
+                        if (onRetry != null && current.receiver != null) {
+                            TextButton(
+                                onClick = { onRetry(current.receiver!!) },
+                                modifier = Modifier.testTag("retry_cast_button"),
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.action_retry),
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -117,6 +163,7 @@ private fun StatusText(state: SessionState, modifier: Modifier = Modifier) {
             is SessionState.SettingUp -> stringResource(R.string.state_setting_up)
             is SessionState.Mirroring -> stringResource(R.string.state_mirroring)
             is SessionState.StreamingAudio -> stringResource(R.string.state_streaming_audio)
+            is SessionState.Reconnecting -> stringResource(R.string.state_reconnecting)
             is SessionState.Failed -> stringResource(R.string.error_title)
         }
         Text(
@@ -137,6 +184,13 @@ private fun StatusText(state: SessionState, modifier: Modifier = Modifier) {
 
             is SessionState.SettingUp -> state.receiver.name
 
+            is SessionState.Reconnecting ->
+                "${state.receiver.name} · " + stringResource(
+                    R.string.state_reconnecting_progress,
+                    state.attempt,
+                    state.maxAttempts,
+                ) + " (${state.reason})"
+
             is SessionState.Mirroring -> stringResource(
                 R.string.mirroring_resolution,
                 state.width,
@@ -145,8 +199,7 @@ private fun StatusText(state: SessionState, modifier: Modifier = Modifier) {
             ) + "  ·  " + formatRate(state.kilobitsPerSecond)
 
             is SessionState.StreamingAudio ->
-                state.receiver.name +
-                    "  ·  " + formatRate(state.kilobitsPerSecond)
+                state.receiver.name + "  ·  " + formatRate(state.kilobitsPerSecond)
 
             is SessionState.Failed -> if (state.requiresRepairing) {
                 stringResource(R.string.error_repair_needed)
@@ -160,13 +213,12 @@ private fun StatusText(state: SessionState, modifier: Modifier = Modifier) {
             Text(
                 text = detail,
                 style = MaterialTheme.typography.bodySmall,
-                color = onContainer.copy(alpha = 0.78f),
+                color = onContainer.copy(alpha = 0.82f),
             )
         }
     }
 }
 
-/** kbps under 1 Mbps, Mbps above it, so the number stays short either way. */
 @Composable
 private fun formatRate(kilobitsPerSecond: Long): String = if (kilobitsPerSecond < 1_000) {
     stringResource(R.string.mirroring_rate_kbps, kilobitsPerSecond)
@@ -174,7 +226,6 @@ private fun formatRate(kilobitsPerSecond: Long): String = if (kilobitsPerSecond 
     stringResource(R.string.mirroring_rate_mbps, kilobitsPerSecond / 1000.0f)
 }
 
-/** Breathing dot: the one place a looping animation earns its keep. */
 @Composable
 private fun PulsingDot() {
     val transition = rememberInfiniteTransition(label = "pulse")
@@ -189,8 +240,7 @@ private fun PulsingDot() {
     )
 
     Box(
-        Modifier
-            .size(24.dp),
+        Modifier.size(24.dp),
         contentAlignment = Alignment.Center,
     ) {
         Box(

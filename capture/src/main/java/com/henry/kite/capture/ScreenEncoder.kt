@@ -180,58 +180,78 @@ class ScreenEncoder(
         }
     }
 
-    private fun mediaFormatFor(target: VideoFormat): MediaFormat =
-        MediaFormat.createVideoFormat(MIME_H264, target.width, target.height).apply {
-            setInteger(
-                MediaFormat.KEY_COLOR_FORMAT,
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
-            )
-            setInteger(MediaFormat.KEY_BIT_RATE, target.bitRate)
-            setInteger(MediaFormat.KEY_FRAME_RATE, target.frameRate)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, target.keyFrameIntervalSeconds)
-            // VBR: a static screen costs almost nothing and motion bursts up to
-            // the full budget. CBR's flat per-frame allocation is exactly what
-            // smeared fast-moving content — the quantizer spiked the moment
-            // frames got complex because the budget never grows.
-            setInteger(
-                MediaFormat.KEY_BITRATE_MODE,
-                MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR,
-            )
-            // Not a compile-SDK constant ("max-bitrate" is read by the framework's
-            // C2 mapping and clamped by the codec's own level limit).
-            setInteger("max-bitrate", target.bitRate)
-
-            // Receivers accept Baseline, and it is the safest common denominator.
-            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
-            // Level 4.1 caps the rate control near 50 Mbps — silently clamping
-            // the slider's 200 and starving motion frames. Level 5.2 is what
-            // 2400p120 requires anyway; configure() falls back to 4.1 when a
-            // device cannot do it.
-            setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel52)
-
-            // Repeat the last frame when the screen is static, otherwise the
-            // receiver's decoder stalls and playback looks frozen.
-            setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, STATIC_FRAME_REPEAT_US)
+    private fun mediaFormatFor(
+        target: VideoFormat,
+        allowLevel52: Boolean = true,
+        allowLowLatencyHints: Boolean = true,
+        allowCustomBitrateMode: Boolean = true,
+    ): MediaFormat = MediaFormat.createVideoFormat(MIME_H264, target.width, target.height).apply {
+        setInteger(
+            MediaFormat.KEY_COLOR_FORMAT,
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
+        )
+        setInteger(MediaFormat.KEY_BIT_RATE, target.bitRate)
+        setInteger(MediaFormat.KEY_FRAME_RATE, target.frameRate)
+        setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, target.keyFrameIntervalSeconds)
+        val codecMode = if (allowCustomBitrateMode) {
+            when (target.bitrateMode) {
+                BitrateMode.CBR -> MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+                BitrateMode.CQ -> MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CQ
+                BitrateMode.AUTO_ADAPTIVE, BitrateMode.VBR -> MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+            }
+        } else {
+            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
         }
+        setInteger(MediaFormat.KEY_BITRATE_MODE, codecMode)
+        setInteger("max-bitrate", target.bitRate)
+
+        setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
+        val level = if (allowLevel52) {
+            MediaCodecInfo.CodecProfileLevel.AVCLevel52
+        } else {
+            MediaCodecInfo.CodecProfileLevel.AVCLevel41
+        }
+        setInteger(MediaFormat.KEY_LEVEL, level)
+
+        if (target.lowLatency && allowLowLatencyHints) {
+            setInteger(MediaFormat.KEY_PRIORITY, 0)
+            setInteger(MediaFormat.KEY_LATENCY, 1)
+        }
+        if (target.drmCompatibilityMode) {
+            setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+            setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+            setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+        }
+        setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, STATIC_FRAME_REPEAT_US)
+    }
 
     /**
-     * Configures the codec, retrying at AVC Level 4.1 when the device rejects
-     * Level 5.2. Every consumer of this stream (VideoToolbox on macOS, the
-     * d3d12 decoders on Windows, Android's own decoder) handles 5.2; only
-     * some encoders refuse to *produce* it.
+     * Configures the codec, progressively falling back from custom bitrate modes,
+     * low-latency hints, and AVC Level 5.2 to baseline VBR Level 4.1 when hardware rejects them.
      */
     private fun configureEncoder(encoder: MediaCodec, target: VideoFormat) {
-        val format = mediaFormatFor(target)
-        try {
-            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        } catch (e: Exception) {
-            Log.w(TAG, "Level 5.2 rejected; falling back to 4.1", e)
-            format.setInteger(
-                MediaFormat.KEY_LEVEL,
-                MediaCodecInfo.CodecProfileLevel.AVCLevel41,
+        val attempts = listOf(
+            Triple(true, true, true),
+            Triple(true, false, false),
+            Triple(false, false, false),
+        )
+        var lastError: Exception? = null
+        for ((level52, lowLatency, customMode) in attempts) {
+            val fmt = mediaFormatFor(
+                target = target,
+                allowLevel52 = level52,
+                allowLowLatencyHints = lowLatency,
+                allowCustomBitrateMode = customMode,
             )
-            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            try {
+                encoder.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                return
+            } catch (e: Exception) {
+                lastError = e
+                Log.w(TAG, "Codec config failed (lvl52=$level52 ll=$lowLatency custom=$customMode): ${e.message}")
+            }
         }
+        throw lastError ?: IllegalStateException("Unable to configure H.264 encoder")
     }
 
     /**
@@ -256,6 +276,11 @@ class ScreenEncoder(
             maxLongEdge = maxLongEdge,
             frameRate = format.frameRate,
             bitRate = bitRateOverride,
+        ).copy(
+            keyFrameIntervalSeconds = format.keyFrameIntervalSeconds,
+            bitrateMode = format.bitrateMode,
+            lowLatency = format.lowLatency,
+            drmCompatibilityMode = format.drmCompatibilityMode,
         )
         if (rotated.width == currentFormat.width && rotated.height == currentFormat.height) return
 
@@ -347,8 +372,7 @@ class ScreenEncoder(
     private companion object {
         const val TAG = "ScreenEncoder"
         const val MIME_H264 = MediaFormat.MIMETYPE_VIDEO_AVC
-        const val VIRTUAL_DISPLAY_NAME = "Kite"
-        const val BITRATE_MODE_CBR = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+        const val VIRTUAL_DISPLAY_NAME = "RokuCast"
 
         /** Resend the previous frame after this long with no screen change. */
         const val STATIC_FRAME_REPEAT_US = 100_000L

@@ -49,7 +49,7 @@ import kotlin.random.Random
  * path, stored credentials mean pair-verify alone; a first-time receiver needs
  * pair-setup, which is why [connect] takes a PIN provider.
  */
-@Suppress("LargeClass")
+@Suppress("LargeClass", "TooManyFunctions")
 class MirrorSession(
     private val receiver: AirPlayReceiver,
     private val credentialStore: CredentialStore,
@@ -140,7 +140,7 @@ class MirrorSession(
      */
     // Sequential handshake (pairing → FairPlay → SETUP phases); splitting it
     // would scatter the session state it threads through.
-    @Suppress("LongMethod")
+    @Suppress("LongMethod", "LongParameterList")
     suspend fun connect(
         width: Int,
         height: Int,
@@ -148,6 +148,7 @@ class MirrorSession(
         pinProvider: PinProvider,
         passwordProvider: PasswordProvider? = null,
         videoEnabled: Boolean = true,
+        lowLatencyMode: Boolean = false,
     ): MirrorStream? {
         _state.value = SessionState.Connecting(receiver)
         this.passwordProvider = passwordProvider
@@ -218,6 +219,7 @@ class MirrorSession(
                     timing.port,
                     keys?.sharedSecret ?: ByteArray(0),
                     videoEnabled = videoEnabled,
+                    lowLatencyMode = lowLatencyMode,
                 )
                 modernSetup = setup
                 dataStream = result.stream
@@ -234,7 +236,16 @@ class MirrorSession(
                     ).requireSuccess("RECORD")
                 }
             } else {
-                dataStream = setupLegacySession(client, deviceId, timing.port, fairPlay, width, height, frameRate)
+                dataStream = setupLegacySession(
+                    client,
+                    deviceId,
+                    timing.port,
+                    fairPlay,
+                    width,
+                    height,
+                    frameRate,
+                    lowLatencyMode,
+                )
             }
 
             // Sound-only modern sessions have no video channel to open.
@@ -342,12 +353,12 @@ class MirrorSession(
         val passwordRequired = (statusFlags != null && statusFlags and STATUS_FLAG_PASSWORD != 0L) ||
             receiver.requiresPassword
         val pinRequired = statusFlags != null && statusFlags and STATUS_FLAG_PIN_PAIRING != 0L
-        val modern = features.usesModernPairing
+        val modern = features.usesModernPairing || (receiver.isRoku && features.supportsUnifiedPairSetup)
         val transientCapable = features.supportsSystemPairing || features.supportsCoreUtilsPairingAndEncryption
         Log.i(
             TAG,
-            "Pairing plan: modern=$modern password=$passwordRequired pin=$pinRequired " +
-                "transient=$transientCapable features=$features",
+            "Pairing plan: roku=${receiver.isRoku} modern=$modern password=$passwordRequired " +
+                "pin=$pinRequired transient=$transientCapable features=$features",
         )
 
         return when {
@@ -461,12 +472,52 @@ class MirrorSession(
      * collects the code, runs full pair-setup and pair-verify, and stores the
      * credentials only once the receiver has accepted them.
      */
+    @Suppress("LongMethod")
     private suspend fun codePairing(
         client: RtspClient,
         pinProvider: PinProvider,
         protocol: PairingProtocol,
     ): SessionKeys {
-        val hkp = protocol.hkpVersion ?: PairingTransport.HKP_LEGACY
+        var activeProtocol = protocol
+        var hkp = activeProtocol.hkpVersion ?: PairingTransport.HKP_LEGACY
+        sendPinStart(client, hkp)
+
+        var setup = PairSetup(
+            client,
+            hkpVersion = hkp,
+            screenCaptureAcl = activeProtocol == PairingProtocol.HAP_SCREEN_CAPTURE,
+        )
+        try {
+            setup.begin()
+        } catch (e: Exception) {
+            val canFallbackRoku = receiver.isRoku && activeProtocol == PairingProtocol.HAP_SCREEN_CAPTURE
+            if (!canFallbackRoku || (e !is RtspException && e !is PairingException)) throw e
+            Log.w(TAG, "Roku rejected HKP $hkp pair-setup M1 (${e.message}); falling back to HKP 3")
+            runCatching { client.close() }
+            client.connect()
+            activeProtocol = PairingProtocol.HAP_LEGACY
+            hkp = PairingTransport.HKP_LEGACY
+            sendPinStart(client, hkp)
+            setup = PairSetup(client, hkpVersion = hkp, screenCaptureAcl = false)
+            setup.begin()
+        }
+
+        _state.value = SessionState.AwaitingPin(receiver)
+        val pin = pinProvider.requestPin()
+            ?: throw PairingException("Pairing cancelled before the code was entered")
+
+        _state.value = SessionState.Pairing(receiver)
+        val credentials = setup.complete(pin.trim())
+
+        val keys = PairVerify(client, credentials, activeProtocol).verify()
+        client.enableEncryption(keys)
+        credentialStore.save(receiver.stableId, credentials, receiver.name)
+        activeCredentials = credentials
+        Log.i(TAG, "Paired with ${receiver.name} ($activeProtocol) and stored credentials")
+        return keys
+    }
+
+    private suspend fun sendPinStart(client: RtspClient, hkp: String) {
         runCatching {
             client.send(
                 RtspRequest(
@@ -479,26 +530,6 @@ class MirrorSession(
                 ),
             )
         }.onFailure { Log.w(TAG, "pair-pin-start failed; continuing", it) }
-
-        _state.value = SessionState.AwaitingPin(receiver)
-        val pin = pinProvider.requestPin()
-            ?: throw PairingException("Pairing cancelled before the code was entered")
-
-        _state.value = SessionState.Pairing(receiver)
-        val setup = PairSetup(
-            client,
-            hkpVersion = hkp,
-            screenCaptureAcl = protocol == PairingProtocol.HAP_SCREEN_CAPTURE,
-        )
-        setup.begin()
-        val credentials = setup.complete(pin.trim())
-
-        val keys = PairVerify(client, credentials, protocol).verify()
-        client.enableEncryption(keys)
-        credentialStore.save(receiver.stableId, credentials, receiver.name)
-        activeCredentials = credentials
-        Log.i(TAG, "Paired with ${receiver.name} ($protocol) and stored credentials")
-        return keys
     }
 
     private class ReceiverProbe(val statusFlags: Long?, val features: Long?, val publicKey: ByteArray?)
@@ -568,6 +599,7 @@ class MirrorSession(
     }
 
     /** Legacy UxPlay-form SETUP sequence: root ekey/eiv, media streams, RECORD. */
+    @Suppress("LongParameterList")
     private suspend fun setupLegacySession(
         client: RtspClient,
         deviceId: String,
@@ -576,6 +608,7 @@ class MirrorSession(
         width: Int,
         height: Int,
         frameRate: Int,
+        lowLatencyMode: Boolean = false,
     ): MirrorStream {
         val streamConnectionId = Random.nextLong(1, Long.MAX_VALUE)
         sendAuthorized(
@@ -599,6 +632,11 @@ class MirrorSession(
                 width = width,
                 height = height,
                 frameRate = frameRate,
+                latencyMs = if (lowLatencyMode) {
+                    ModernSetupRequests.LOW_LATENCY_VIDEO_MS
+                } else {
+                    SetupRequests.DEFAULT_LATENCY_MS
+                },
             ),
         ).requireSuccess("SETUP (stream)")
 
@@ -616,6 +654,7 @@ class MirrorSession(
             port = dataPort,
             cipher = buildCipher(streamConnectionId, streamKey),
             clock = clock,
+            lowLatencyMode = lowLatencyMode,
         )
     }
 
@@ -832,7 +871,6 @@ class MirrorSession(
         _state.value = when (current) {
             is SessionState.Mirroring -> current.copy(kilobitsPerSecond = kilobitsPerSecond)
             is SessionState.StreamingAudio -> current.copy(kilobitsPerSecond = kilobitsPerSecond)
-            else -> current
         }
 
         // doubletake-style periodic sender report, one per stats window.

@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicLong
  * the receiver's frame ordering consistent, so all sends go through the
  * session's single send loop.
  */
+@Suppress("LongParameterList")
 class MirrorStream(
     private val address: InetAddress,
     private val port: Int,
@@ -35,6 +36,7 @@ class MirrorStream(
     private val timelineId: Long,
     private val modern: Boolean,
     private val clock: MirrorClock,
+    private val lowLatencyMode: Boolean = false,
 ) : Closeable {
 
     constructor(
@@ -42,13 +44,16 @@ class MirrorStream(
         port: Int,
         cipher: StreamCipher,
         clock: MirrorClock,
-    ) : this(address, port, cipher, null, 0L, false, clock)
+        lowLatencyMode: Boolean = false,
+    ) : this(address, port, cipher, null, 0L, false, clock, lowLatencyMode)
 
     private var socket: Socket? = null
     private var output: BufferedOutputStream? = null
 
     private val bytesSent = AtomicLong(0)
     private val framesSent = AtomicLong(0)
+    private val lastWriteMs = AtomicLong(0)
+    private val slowWrites = AtomicLong(0)
 
     /** Timestamp of the codec config; the first video frame reuses it so the
      *  receiver actually prepends the SPS/PPS it just received. Legacy only —
@@ -58,9 +63,14 @@ class MirrorStream(
     private var firstFrameSent = false
 
     val statistics: Statistics
-        get() = Statistics(bytesSent.get(), framesSent.get())
+        get() = Statistics(
+            bytes = bytesSent.get(),
+            frames = framesSent.get(),
+            lastWriteMs = lastWriteMs.get(),
+            slowWriteCount = slowWrites.get(),
+        )
 
-    data class Statistics(val bytes: Long, val frames: Long)
+    data class Statistics(val bytes: Long, val frames: Long, val lastWriteMs: Long = 0L, val slowWriteCount: Long = 0L)
 
     fun connect(timeoutMs: Int = CONNECT_TIMEOUT_MS) {
         check(socket == null) { "Already connected" }
@@ -68,17 +78,19 @@ class MirrorStream(
         // `Socket().apply { }` block, `port` would resolve to Socket.getPort()
         // (0 for an unconnected socket) and shadow this class's field.
         val endpoint = InetSocketAddress(address, port)
-        Log.i(TAG, "Connecting data channel to $endpoint")
+        Log.i(TAG, "Connecting data channel to $endpoint (lowLatency=$lowLatencyMode)")
 
         val s = Socket()
         s.tcpNoDelay = true
-        // A large send buffer smooths over Wi-Fi jitter without adding latency
-        // in the steady state.
-        s.sendBufferSize = SEND_BUFFER_BYTES
+        if (lowLatencyMode) {
+            runCatching { s.trafficClass = IPTOS_LOWDELAY }
+        }
+        val bufferSize = if (lowLatencyMode) LOW_LATENCY_SEND_BUFFER_BYTES else SEND_BUFFER_BYTES
+        s.sendBufferSize = bufferSize
         s.connect(endpoint, timeoutMs)
 
         socket = s
-        output = BufferedOutputStream(s.getOutputStream(), SEND_BUFFER_BYTES)
+        output = BufferedOutputStream(s.getOutputStream(), bufferSize)
         Log.i(TAG, "Data connection open to ${address.hostAddress}:$port")
     }
 
@@ -120,11 +132,9 @@ class MirrorStream(
         val keyframe = containsIdr(avcc)
 
         if (modern) {
-            // 75 ms playout lead (doubletake latencies.video): stamps frames
-            // slightly into the receiver's future so late-arriving packets
-            // still render on time.
+            val leadMs = if (lowLatencyMode) LOW_LATENCY_PLAYOUT_LEAD_MS else PLAYOUT_LEAD_MS
             val timestampNtp = clock.fromPresentationTimeUs(presentationTimeUs) +
-                (PLAYOUT_LEAD_MS * FRACTION_SCALE) / 1_000
+                (leadMs * FRACTION_SCALE) / 1_000
             val header = MirrorPacket.modernVideoHeader(
                 payloadSize = avcc.size + (chacha?.overhead ?: 0),
                 timestampNtp = timestampNtp,
@@ -180,9 +190,15 @@ class MirrorStream(
 
     private fun writePacket(header: ByteArray, payload: ByteArray) {
         val out = output ?: throw IllegalStateException("Data connection is not open")
+        val startedNs = System.nanoTime()
         out.write(header)
         if (payload.isNotEmpty()) out.write(payload)
         out.flush()
+        val elapsedMs = (System.nanoTime() - startedNs) / 1_000_000L
+        lastWriteMs.set(elapsedMs)
+        if (elapsedMs >= SLOW_WRITE_THRESHOLD_MS) {
+            slowWrites.incrementAndGet()
+        }
         bytesSent.addAndGet((header.size + payload.size).toLong())
     }
 
@@ -202,9 +218,13 @@ class MirrorStream(
         const val TAG = "MirrorStream"
         const val CONNECT_TIMEOUT_MS = 5_000
         const val SEND_BUFFER_BYTES = 512 * 1024
+        const val LOW_LATENCY_SEND_BUFFER_BYTES = 256 * 1024
+        const val IPTOS_LOWDELAY = 0x10
+        const val SLOW_WRITE_THRESHOLD_MS = 35L
 
         /** 75 ms playout lead in 32.32-fraction units per millisecond basis. */
         const val FRACTION_SCALE = 1L shl 32
         const val PLAYOUT_LEAD_MS = 75L
+        const val LOW_LATENCY_PLAYOUT_LEAD_MS = 35L
     }
 }

@@ -242,6 +242,8 @@ object ModernSetupRequests {
     private const val STREAM_TYPE_VIDEO = SetupRequests.STREAM_TYPE_VIDEO
     private const val STREAM_TYPE_AUDIO = SetupRequests.STREAM_TYPE_AUDIO
     private const val DEFAULT_LATENCY_MS = SetupRequests.DEFAULT_LATENCY_MS
+    internal const val DEFAULT_MODERN_VIDEO_LATENCY_MS = 75
+    internal const val LOW_LATENCY_VIDEO_MS = 35
 
     /**
      * Modern control SETUP (doubletake `controlPlist`, descriptor-only form).
@@ -306,7 +308,7 @@ object ModernSetupRequests {
         shk: ByteArray,
         shiv: ByteArray,
         uri: String,
-        latencyMs: Int = 75, // doubletake latencies.video for a normal-capability link
+        latencyMs: Int = DEFAULT_MODERN_VIDEO_LATENCY_MS,
     ): RtspRequest {
         val stream = plistDict {
             "type" to STREAM_TYPE_VIDEO

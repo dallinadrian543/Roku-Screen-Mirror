@@ -9,6 +9,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
+import com.henry.kite.settings.ThemeMode
 
 private val LightColors = lightColorScheme(
     primary = primaryLight,
@@ -75,11 +76,12 @@ private val DarkColors = darkColorScheme(
 )
 
 @Composable
-fun KiteTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
-    content: @Composable () -> Unit,
-) {
+fun KiteTheme(themeMode: ThemeMode = ThemeMode.DARK, dynamicColor: Boolean = false, content: @Composable () -> Unit) {
+    val darkTheme = when (themeMode) {
+        ThemeMode.DARK -> true
+        ThemeMode.LIGHT -> false
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+    }
     val context = LocalContext.current
     val colorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->

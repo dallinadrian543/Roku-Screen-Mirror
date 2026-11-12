@@ -2,6 +2,8 @@ package com.henry.kite.capture
 
 import android.annotation.SuppressLint
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.projection.MediaProjection
@@ -12,24 +14,17 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlin.concurrent.thread
 import android.media.AudioFormat as AndroidAudioFormat
 
-/**
- * Captures playback audio and emits ALAC frames (ct=2, 352 samples per frame).
- *
- * The legacy AirPlay receivers this app targets validate each ELD frame against
- * the header Apple's encoder emits (first byte 0x8c-0x8e/0x80-0x82) and drop
- * frames produced by other encoders — Android's AAC encoder fails that check.
- * ALAC frames start with the channel-pair element (0x20), which every receiver
- * accepts, and the encoder here is pure software (see [AlacEncoder]), so no
- * device codec capability is involved.
- *
- * Audio comes from [AudioPlaybackCaptureConfiguration] — the same projection
- * grant as the screen capture. Reading is synchronous: ALAC encodes in tens of
- * microseconds per frame, well within the 8 ms a 352-sample frame allows.
- */
-class AlacAudioEncoder(private val projection: MediaProjection) : AudioFrameSource {
+class AlacAudioEncoder(
+    private val projection: MediaProjection,
+    private val mixMicrophone: Boolean = false,
+    private val preferredMicDevice: AudioDeviceInfo? = null,
+    private val audioManager: AudioManager? = null,
+    private val onMicSilencedChanged: ((Boolean) -> Unit)? = null,
+) : AudioFrameSource {
 
     private val encoder = AlacEncoder()
     private var record: AudioRecord? = null
+    private var micMixer: MicCaptureMixer? = null
 
     @Volatile
     private var isCapturing = false
@@ -38,33 +33,28 @@ class AlacAudioEncoder(private val projection: MediaProjection) : AudioFrameSour
     @Suppress("LoopWithTooManyJumpStatements") // read-failure, short-read, and channel-closed exits
     override fun frames(): Flow<EncodedAudioFrame> = callbackFlow {
         isCapturing = true
-
-        val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
-            .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-            .addMatchingUsage(AudioAttributes.USAGE_GAME)
-            .build()
-
-        val audioFormat = AndroidAudioFormat.Builder()
-            .setEncoding(AndroidAudioFormat.ENCODING_PCM_16BIT)
-            .setSampleRate(SAMPLE_RATE)
-            .setChannelMask(AndroidAudioFormat.CHANNEL_IN_STEREO)
-            .build()
-
-        val minBuffer = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE,
-            AndroidAudioFormat.CHANNEL_IN_STEREO,
-            AndroidAudioFormat.ENCODING_PCM_16BIT,
-        ).coerceAtLeast(MIN_BUFFER_FLOOR_BYTES)
-
-        val audioRecord = AudioRecord.Builder()
-            .setAudioPlaybackCaptureConfig(captureConfig)
-            .setAudioFormat(audioFormat)
-            .setBufferSizeInBytes(minBuffer * BUFFER_SLACK)
-            .build()
+        val audioRecord = createPlaybackRecord()
         record = audioRecord
         audioRecord.startRecording()
 
-        val reader = thread(name = "kite-alac-reader") {
+        val activeMixer = if (mixMicrophone) {
+            MicCaptureMixer(
+                sampleRate = SAMPLE_RATE,
+                channels = CHANNELS,
+                preferredDevice = preferredMicDevice,
+                onSilencedChanged = onMicSilencedChanged,
+            ).also { mixer ->
+                if (!mixer.start()) {
+                    mixer.close()
+                } else {
+                    micMixer = mixer
+                }
+            }
+        } else {
+            null
+        }
+
+        val reader = thread(name = "roku-alac-reader") {
             val frameBytes = FRAME_SAMPLES * CHANNELS * 2
             val pcm = ByteArray(frameBytes)
             val frame = ByteArray(AlacEncoder.MAX_FRAME_BYTES)
@@ -78,6 +68,7 @@ class AlacAudioEncoder(private val projection: MediaProjection) : AudioFrameSour
                 }
                 if (read < frameBytes) continue
 
+                activeMixer?.mixInto(pcm, audioManager)
                 val encoded = encoder.encode(frame, pcm)
                 val data = frame.copyOf(encoded)
                 val timestampUs = samplesSubmitted * 1_000_000L / SAMPLE_RATE
@@ -88,6 +79,8 @@ class AlacAudioEncoder(private val projection: MediaProjection) : AudioFrameSour
 
         awaitClose {
             isCapturing = false
+            runCatching { micMixer?.close() }
+            micMixer = null
             runCatching { audioRecord.stop() }
             runCatching { audioRecord.release() }
             record = null
@@ -97,9 +90,35 @@ class AlacAudioEncoder(private val projection: MediaProjection) : AudioFrameSour
 
     override fun close() {
         isCapturing = false
+        runCatching { micMixer?.close() }
+        micMixer = null
         runCatching { record?.stop() }
         runCatching { record?.release() }
         record = null
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun createPlaybackRecord(): AudioRecord {
+        val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
+            .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+            .addMatchingUsage(AudioAttributes.USAGE_GAME)
+            .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+            .build()
+        val audioFormat = AndroidAudioFormat.Builder()
+            .setEncoding(AndroidAudioFormat.ENCODING_PCM_16BIT)
+            .setSampleRate(SAMPLE_RATE)
+            .setChannelMask(AndroidAudioFormat.CHANNEL_IN_STEREO)
+            .build()
+        val minBuffer = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE,
+            AndroidAudioFormat.CHANNEL_IN_STEREO,
+            AndroidAudioFormat.ENCODING_PCM_16BIT,
+        ).coerceAtLeast(MIN_BUFFER_FLOOR_BYTES)
+        return AudioRecord.Builder()
+            .setAudioPlaybackCaptureConfig(captureConfig)
+            .setAudioFormat(audioFormat)
+            .setBufferSizeInBytes(minBuffer * BUFFER_SLACK)
+            .build()
     }
 
     private companion object {

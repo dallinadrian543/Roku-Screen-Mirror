@@ -1,7 +1,9 @@
 package com.henry.kite.settings
 
+import com.henry.kite.capture.BitrateMode
 import com.henry.kite.capture.VideoFormat
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -36,5 +38,26 @@ class MirrorSettingsTest {
         // Building the widest legal format the settings can produce must not throw.
         val widest = MirrorSettings(bitRateMbps = MirrorSettings.BIT_RATE_MAX_MBPS)
         VideoFormat(1072, 2400, frameRate = 120, bitRate = widest.bitRateBps())
+    }
+
+    @Test
+    fun `resolution presets cover native 4k 1440p and 480p`() {
+        assertEquals(VideoFormat.LONG_EDGE_UNLIMITED, Quality.NATIVE.maxLongEdge)
+        assertEquals(3840, Quality.P2160.maxLongEdge)
+        assertEquals(2560, Quality.P1440.maxLongEdge)
+        assertEquals(854, Quality.P480.maxLongEdge)
+    }
+
+    @Test
+    fun `bitrate control modes map cleanly and defaults enable dark mode`() {
+        val defaults = MirrorSettings()
+        assertEquals(ThemeMode.DARK, defaults.themeMode)
+        assertTrue(defaults.lowLatencyMode)
+        assertTrue(defaults.autoReconnect)
+        assertTrue(defaults.drmCompatibilityMode)
+        assertEquals(BitrateMode.AUTO_ADAPTIVE, BitrateControlMode.AUTO.toCaptureMode())
+        assertEquals(BitrateMode.VBR, BitrateControlMode.VBR.toCaptureMode())
+        assertEquals(BitrateMode.CBR, BitrateControlMode.CBR.toCaptureMode())
+        assertEquals(BitrateMode.CQ, BitrateControlMode.CQ.toCaptureMode())
     }
 }

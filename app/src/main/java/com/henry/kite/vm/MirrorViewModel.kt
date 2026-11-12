@@ -7,8 +7,10 @@ import com.henry.kite.KiteApplication
 import com.henry.kite.R
 import com.henry.kite.airplay.discovery.AirPlayReceiver
 import com.henry.kite.airplay.session.SessionState
+import com.henry.kite.audio.AudioRoutingState
 import com.henry.kite.service.MirrorController
 import com.henry.kite.settings.MirrorSettings
+import com.henry.kite.settings.ThemeMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +28,7 @@ data class DiscoveryUiState(
     val discoveryError: String? = null,
 )
 
+@Suppress("TooManyFunctions")
 class MirrorViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application as KiteApplication
@@ -33,27 +36,28 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
     private val pairedIdsState = MutableStateFlow<Set<String>>(emptySet())
     private val discoveryErrorState = MutableStateFlow<String?>(null)
 
-    /** Encoder settings, owned by the settings screen and read here at launch. */
     val settings: StateFlow<MirrorSettings> = app.settingsRepository.settings.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS),
         initialValue = MirrorSettings(),
     )
 
-    /** Set while the receiver is showing a PIN and the dialog is up. */
+    val audioRoutingState: StateFlow<AudioRoutingState> = app.audioRouting.state
+
+    val micSilencedByCall: StateFlow<Boolean> = MirrorController.micSilencedByCall
+
     private val _pinRequest = MutableStateFlow<AirPlayReceiver?>(null)
     val pinRequest: StateFlow<AirPlayReceiver?> = _pinRequest.asStateFlow()
 
-    /** Set while a receiver is waiting for its AirPlay password (Digest auth). */
     private val _passwordRequest = MutableStateFlow<AirPlayReceiver?>(null)
     val passwordRequest: StateFlow<AirPlayReceiver?> = _passwordRequest.asStateFlow()
 
-    /**
-     * Receiver the user tapped, held while the projection consent dialog is up.
-     *
-     * Lives here, not on the Activity, so rotating the screen while the system
-     * dialog is showing does not lose the tap when the result arrives.
-     */
+    private val _manualConnectBusy = MutableStateFlow(false)
+    val manualConnectBusy: StateFlow<Boolean> = _manualConnectBusy.asStateFlow()
+
+    private val _manualConnectError = MutableStateFlow<String?>(null)
+    val manualConnectError: StateFlow<String?> = _manualConnectError.asStateFlow()
+
     var pendingReceiver: AirPlayReceiver? = null
 
     val sessionState: StateFlow<SessionState> = MirrorController.state
@@ -81,18 +85,80 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         refreshPairedIds()
-        // The controller asks here when a receiver needs its PIN entered.
         MirrorController.onPinRequired = { receiver -> _pinRequest.value = receiver }
-        // ... or its AirPlay password.
         MirrorController.onPasswordRequired = { receiver -> _passwordRequest.value = receiver }
-        // The QS-tile picker hands off to this screen mid-session; if a pairing
-        // request is already waiting, pick it up so the dialog shows at once.
         when (val state = MirrorController.state.value) {
             is SessionState.AwaitingPin -> _pinRequest.value = state.receiver
             is SessionState.AwaitingPassword -> _passwordRequest.value = state.receiver
             else -> Unit
         }
     }
+
+    fun refreshDiscovery() {
+        discoveryErrorState.value = null
+        app.discovery.refresh()
+        app.audioRouting.refresh()
+    }
+
+    fun addManualReceiver(host: String, port: Int, onFound: (AirPlayReceiver) -> Unit) {
+        viewModelScope.launch {
+            _manualConnectBusy.value = true
+            _manualConnectError.value = null
+            val result = app.discovery.addManualEndpoint(host, port)
+            _manualConnectBusy.value = false
+            result
+                .onSuccess { receiver -> onFound(receiver) }
+                .onFailure { err -> _manualConnectError.value = err.message }
+        }
+    }
+
+    fun clearManualError() {
+        _manualConnectError.value = null
+    }
+
+    fun toggleVideoCallMode() {
+        viewModelScope.launch {
+            val next = !settings.value.videoCallMode
+            app.settingsRepository.setVideoCallMode(next)
+            if (!next) {
+                app.audioRouting.restoreDefaultRouting()
+            }
+        }
+    }
+
+    fun setMixMicrophoneInCalls(enabled: Boolean) {
+        viewModelScope.launch {
+            app.settingsRepository.setMixMicrophoneInCalls(enabled)
+        }
+    }
+
+    fun selectMicDevice(deviceId: Int) {
+        viewModelScope.launch {
+            app.settingsRepository.setPreferredMicDeviceId(deviceId)
+        }
+    }
+
+    fun selectOutputDevice(deviceId: Int) {
+        viewModelScope.launch {
+            app.settingsRepository.setPreferredOutputDeviceId(deviceId)
+            app.audioRouting.applyOutputDevice(deviceId)
+        }
+    }
+
+    fun cycleThemeMode() {
+        viewModelScope.launch {
+            val next = when (settings.value.themeMode) {
+                ThemeMode.DARK -> ThemeMode.LIGHT
+                ThemeMode.LIGHT -> ThemeMode.SYSTEM
+                ThemeMode.SYSTEM -> ThemeMode.DARK
+            }
+            app.settingsRepository.setThemeMode(next)
+        }
+    }
+
+    fun openAndroidSoundSettings() = app.audioRouting.openAndroidSoundSettings(app)
+
+    fun openBluetoothSettings() = app.audioRouting.openBluetoothSettings(app)
 
     fun submitPin(pin: String) {
         _pinRequest.value = null
@@ -129,14 +195,12 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    /** Called after a session ends so the "paired" badges stay accurate. */
     fun onSessionEnded() = refreshPairedIds()
 
-    /**
-     * Re-reads the stored pairings. The settings screen can forget a receiver
-     * while this screen sits in the back stack, so the badges refresh on resume.
-     */
-    fun refreshPairedReceivers() = refreshPairedIds()
+    fun refreshPairedReceivers() {
+        refreshPairedIds()
+        app.audioRouting.refresh()
+    }
 
     private companion object {
         const val STOP_TIMEOUT_MS = 5_000L

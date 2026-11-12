@@ -20,6 +20,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.henry.kite.logs.Logs
 import com.henry.kite.ui.GITHUB_URL
+import com.henry.kite.ui.SettingsActions
 import com.henry.kite.ui.SettingsScreen
 import com.henry.kite.ui.theme.KiteTheme
 import com.henry.kite.vm.SettingsViewModel
@@ -42,28 +43,43 @@ class SettingsActivity : AppCompatActivity() {
         enableEdgeToEdge()
 
         setContent {
-            KiteTheme {
-                val settings by viewModel.settings.collectAsStateWithLifecycle()
+            val settings by viewModel.settings.collectAsStateWithLifecycle()
+            val audioRoutingState by viewModel.audioRoutingState.collectAsStateWithLifecycle()
+
+            KiteTheme(themeMode = settings.themeMode) {
                 var isBatteryExempt by remember { mutableStateOf(isIgnoringBatteryOptimizations()) }
 
-                // The exemption is granted in a system dialog, so the answer only
-                // shows up once this screen comes back to the foreground.
                 LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
                     isBatteryExempt = isIgnoringBatteryOptimizations()
+                    viewModel.refreshAudioDevices()
                 }
 
                 SettingsScreen(
                     settings = settings,
+                    audioRoutingState = audioRoutingState,
                     isBatteryExempt = isBatteryExempt,
-                    onSelectQuality = viewModel::setQuality,
-                    onSelectFrameRate = viewModel::setFrameRate,
-                    onSelectBitRate = viewModel::setBitRateMbps,
-                    onRequestBatteryExemption = ::requestBatteryExemption,
-                    onShareLogs = ::shareLogs,
-                    onOpenSavedReceivers = ::openSavedReceivers,
-                    onOpenGitHub = ::openGitHub,
                     versionLabel = versionLabel(),
-                    onBack = { finish() },
+                    actions = SettingsActions(
+                        onSelectQuality = viewModel::setQuality,
+                        onSelectFrameRate = viewModel::setFrameRate,
+                        onSelectBitRate = viewModel::setBitRateMbps,
+                        onSelectBitrateMode = viewModel::setBitrateMode,
+                        onSelectKeyFrameInterval = viewModel::setKeyFrameIntervalSeconds,
+                        onSetLowLatencyMode = viewModel::setLowLatencyMode,
+                        onSetAutoReconnect = viewModel::setAutoReconnect,
+                        onSetDrmCompatibilityMode = viewModel::setDrmCompatibilityMode,
+                        onSetVideoCallMode = viewModel::setVideoCallMode,
+                        onSetMixMicrophoneInCalls = viewModel::setMixMicrophoneInCalls,
+                        onSelectMicDevice = viewModel::setPreferredMicDeviceId,
+                        onSelectOutputDevice = viewModel::setPreferredOutputDeviceId,
+                        onOpenAndroidSoundSettings = viewModel::openAndroidSoundSettings,
+                        onSelectThemeMode = viewModel::setThemeMode,
+                        onRequestBatteryExemption = ::requestBatteryExemption,
+                        onShareLogs = ::shareLogs,
+                        onOpenSavedReceivers = ::openSavedReceivers,
+                        onOpenGitHub = ::openGitHub,
+                        onBack = { finish() },
+                    ),
                 )
             }
         }
@@ -94,12 +110,7 @@ class SettingsActivity : AppCompatActivity() {
         startActivity(Intent(this, SavedReceiversActivity::class.java))
     }
 
-    /**
-     * Bundles the app's recent logcat output and opens the share sheet.
-     *
-     * Collecting runs off the main thread (logcat dumps can be slow); the
-     * chooser itself needs to start from it again.
-     */
+    @Suppress("InjectDispatcher")
     private fun shareLogs() {
         lifecycleScope.launch(Dispatchers.IO) {
             val file = runCatching { Logs.collect(this@SettingsActivity) }
@@ -125,12 +136,6 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Opens the system prompt for the exemption.
-     *
-     * Some builds (and most Chinese OEM ROMs) block the direct request intent, so
-     * a failure falls back to the general battery-optimisation list.
-     */
     private fun requestBatteryExemption() {
         val direct = Intent(
             Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,

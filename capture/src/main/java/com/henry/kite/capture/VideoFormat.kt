@@ -1,5 +1,13 @@
 package com.henry.kite.capture
 
+/** Bitrate rate-control strategy passed to MediaCodec. */
+enum class BitrateMode {
+    AUTO_ADAPTIVE,
+    VBR,
+    CBR,
+    CQ,
+}
+
 /** Encoder settings for one mirroring session. */
 data class VideoFormat(
     val width: Int,
@@ -7,7 +15,10 @@ data class VideoFormat(
     val frameRate: Int = 30,
     val bitRate: Int = defaultBitRate(width, height, 30),
     /** Seconds between IDR frames. Short keeps recovery fast after packet loss. */
-    val keyFrameIntervalSeconds: Int = 2,
+    val keyFrameIntervalSeconds: Int = 1,
+    val bitrateMode: BitrateMode = BitrateMode.VBR,
+    val lowLatency: Boolean = true,
+    val drmCompatibilityMode: Boolean = true,
 ) {
     init {
         // H.264 requires even dimensions; most hardware encoders demand multiples of 16.

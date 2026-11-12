@@ -37,20 +37,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.henry.kite.R
 import com.henry.kite.airplay.discovery.AirPlayReceiver
+import com.henry.kite.airplay.discovery.DiscoverySource
 import com.henry.kite.airplay.discovery.PairingPath
 
 /**
  * One receiver in the discovery list.
- *
- * The container morphs on press: corners round out and the card shrinks slightly.
- * Both use a bouncy spring rather than a duration, so an interrupted press
- * retargets from wherever the animation currently is instead of snapping.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -60,9 +58,7 @@ fun ReceiverCard(
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    /** Audio-only cast entry; null means the card has no long-press action. */
     onLongClick: (() -> Unit)? = null,
-    /** false drops the leading avatar; the Quick Settings picker keeps rows compact. */
     showAvatar: Boolean = true,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -85,10 +81,6 @@ fun ReceiverCard(
         label = "receiverCardCorner",
     )
 
-    // combinedClickable instead of Card(onClick): the click handler owns tap
-    // AND long-press on one chain, so a long press cannot also leak a click
-    // (with Card(onClick) plus an outer detectTapGestures both fired, and the
-    // two consent dialogs cancelled each other out).
     Card(
         shape = RoundedCornerShape(cornerRadius),
         colors = CardDefaults.cardColors(
@@ -96,9 +88,8 @@ fun ReceiverCard(
         ),
         modifier = modifier
             .fillMaxWidth()
+            .testTag("receiver_card_${receiver.address.hostAddress}_${receiver.port}")
             .scale(pressScale)
-            // Clip before the click handler so the ripple follows the card's
-            // rounded corners instead of drawing as a rectangle over them.
             .clip(RoundedCornerShape(cornerRadius))
             .combinedClickable(
                 interactionSource = interactionSource,
@@ -114,7 +105,6 @@ fun ReceiverCard(
         ) {
             if (showAvatar) {
                 ReceiverAvatar(receiver = receiver, isPaired = isPaired)
-
                 Spacer(Modifier.size(16.dp))
             }
 
@@ -164,7 +154,7 @@ fun ReceiverCard(
 private fun ReceiverAvatar(receiver: AirPlayReceiver, isPaired: Boolean) {
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = if (isPaired) {
+        color = if (isPaired || receiver.isRoku) {
             MaterialTheme.colorScheme.primaryContainer
         } else {
             MaterialTheme.colorScheme.surfaceContainerHighest
@@ -175,7 +165,7 @@ private fun ReceiverAvatar(receiver: AirPlayReceiver, isPaired: Boolean) {
             Icon(
                 imageVector = receiverIcon(receiver),
                 contentDescription = null,
-                tint = if (isPaired) {
+                tint = if (isPaired || receiver.isRoku) {
                     MaterialTheme.colorScheme.onPrimaryContainer
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
@@ -186,19 +176,24 @@ private fun ReceiverAvatar(receiver: AirPlayReceiver, isPaired: Boolean) {
     }
 }
 
-/** Best-fit glyph from the advertised model: Macs read as laptops, everything
- *  else that mirrors reads as the generic receiver screen. */
 private fun receiverIcon(receiver: AirPlayReceiver): ImageVector = when {
     receiver.isAudioOnly -> Icons.Outlined.Speaker
     receiver.model?.startsWith("Mac") == true -> Icons.Outlined.LaptopMac
     else -> Icons.Outlined.Tv
 }
 
-/** Model plus whatever caveat matters most for this receiver. */
 @Composable
-private fun AirPlayReceiver.subtitle(): String = when {
-    isAudioOnly -> stringResource(R.string.receiver_audio_only)
-    !supportsMirroring -> stringResource(R.string.receiver_no_mirroring)
-    pairingPath == PairingPath.LEGACY -> stringResource(R.string.receiver_legacy_pairing)
-    else -> displayModel
+private fun AirPlayReceiver.subtitle(): String {
+    val base = when {
+        isAudioOnly -> stringResource(R.string.receiver_audio_only)
+        !supportsMirroring -> stringResource(R.string.receiver_no_mirroring)
+        pairingPath == PairingPath.LEGACY -> stringResource(R.string.receiver_legacy_pairing)
+        isRoku -> stringResource(R.string.receiver_roku)
+        else -> displayModel
+    }
+    return when (discoverySource) {
+        DiscoverySource.MANUAL_IP -> "$base · ${stringResource(R.string.receiver_source_manual)}"
+        DiscoverySource.SAVED_PROBE -> "$base · ${stringResource(R.string.receiver_source_saved)}"
+        else -> base
+    }
 }

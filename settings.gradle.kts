@@ -17,7 +17,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Kite"
+rootProject.name = "Roku Screen Mirroring"
 
 include(":app")
 include(":airplay")

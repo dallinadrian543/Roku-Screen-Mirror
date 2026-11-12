@@ -8,10 +8,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.media.AudioManager
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.DisplayMetrics
@@ -30,7 +33,9 @@ import com.henry.kite.airplay.discovery.WifiNetworkResolver
 import com.henry.kite.airplay.pairing.PairingException
 import com.henry.kite.airplay.pairing.TlvError
 import com.henry.kite.airplay.session.AirPlay2Session
+import com.henry.kite.airplay.session.ErrorGuidance
 import com.henry.kite.airplay.session.MirrorSession
+import com.henry.kite.airplay.session.MirrorStream
 import com.henry.kite.airplay.session.NaluRepacker
 import com.henry.kite.airplay.session.PasswordRequiredException
 import com.henry.kite.airplay.session.RaopAudioStream
@@ -41,6 +46,9 @@ import com.henry.kite.capture.AudioFrameSource
 import com.henry.kite.capture.AudioPcmSource
 import com.henry.kite.capture.ScreenEncoder
 import com.henry.kite.capture.VideoFormat
+import com.henry.kite.settings.BitrateControlMode
+import com.henry.kite.settings.MirrorSettings
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -52,12 +60,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Runs the mirroring session in the foreground.
- *
- * MediaProjection needs a foreground service of type `mediaProjection` to already
- * be running on API 34+, so the projection result from the Activity is handed here
- * and only turned into a capture session after [startForeground].
+ * Foreground service running AirPlay screen & audio casting, adaptive bitrate
+ * congestion control, video call audio/mic routing, and transient auto-reconnect.
  */
+@Suppress("LargeClass", "TooManyFunctions")
 class MirrorService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -66,13 +72,20 @@ class MirrorService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
 
     private var projection: MediaProjection? = null
+    private var projectionCallback: MediaProjection.Callback? = null
+
+    @Volatile
+    private var projectionRevoked: Boolean = false
+
+    @Volatile
+    private var manualStopRequested: Boolean = false
+
     private var encoder: ScreenEncoder? = null
     private var audioEncoder: AudioFrameSource? = null
     private var session: MirrorSession? = null
     private var raopSession: RaopSession? = null
     private var airPlay2Session: AirPlay2Session? = null
 
-    /** Encoded dimensions right now; rotation swaps them mid-session. */
     @Volatile
     private var liveWidth: Int = 0
 
@@ -83,7 +96,6 @@ class MirrorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // Keep the Quick Settings tile in step with the session state.
         MirrorController.onPublish = { KiteTileService.requestRefresh(this) }
     }
 
@@ -96,8 +108,6 @@ class MirrorService : Service() {
         return START_NOT_STICKY
     }
 
-    // Straight-line intent dispatch (stop / audio-only / video-only / mirror);
-    // each branch is two or three lines, splitting would add indirection only.
     @Suppress("LongMethod")
     private fun handleStart(intent: Intent) {
         @Suppress("DEPRECATION")
@@ -117,22 +127,15 @@ class MirrorService : Service() {
         }
 
         val target = receiver.toReceiver()
-        // A mirroring-capable receiver can still be casted to in audio-only
-        // mode (the receiver card's long-press); that routes like any other
-        // audio session. The reverse — video without sound — is the same
-        // mirroring session with the audio feed skipped.
         val audioOnly = intent.getBooleanExtra(EXTRA_AUDIO_ONLY, false)
         val videoOnly = intent.getBooleanExtra(EXTRA_VIDEO_ONLY, false)
-        // Promote before touching MediaProjection: API 34+ throws otherwise.
-        // The microphone type may only be claimed with RECORD_AUDIO granted;
-        // claiming it ungranted throws SecurityException and would take down
-        // video-only casts, so the mask follows the actual grant.
+        MirrorController.recordTarget(CastTarget(target, audioOnly = audioOnly, videoOnly = videoOnly))
+        MirrorController.publishMicSilenced(false)
+        manualStopRequested = false
+        projectionRevoked = false
+
         val serviceTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
-            if (hasAudioPermission()) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            } else {
-                0
-            }
+            if (hasAudioPermission()) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
         ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(target.name), serviceTypes)
 
         val manager = getSystemService(MediaProjectionManager::class.java)
@@ -145,18 +148,81 @@ class MirrorService : Service() {
             stopSelf()
             return
         }
+        registerProjectionCallback(mediaProjection)
         projection = mediaProjection
-
         acquireWakeLock()
+        startMetricNotificationObserver(target.name)
 
-        // Live metrics in the notification: the once-per-second session states
-        // that drive the status panel also refresh the notification's text.
+        sessionJob = scope.launch {
+            val settings = (application as KiteApplication).settingsRepository.current()
+            if (settings.videoCallMode && settings.preferredOutputDeviceId != MirrorSettings.DEVICE_SYSTEM_DEFAULT) {
+                (application as KiteApplication).audioRouting.applyOutputDevice(settings.preferredOutputDeviceId)
+            }
+            launchRequestedChain(
+                target = target,
+                mediaProjection = mediaProjection,
+                intent = intent,
+                settings = settings,
+                audioOnly = audioOnly,
+                videoOnly = videoOnly,
+            )
+        }
+    }
+
+    private suspend fun launchRequestedChain(
+        target: AirPlayReceiver,
+        mediaProjection: MediaProjection,
+        intent: Intent,
+        settings: MirrorSettings,
+        audioOnly: Boolean,
+        videoOnly: Boolean,
+    ) {
+        if (target.isAudioOnly) {
+            runAudioSession(target, mediaProjection)
+        } else if (audioOnly && target.pairingPath == PairingPath.HAP) {
+            runSessionWithReconnect(
+                receiver = target,
+                mediaProjection = mediaProjection,
+                maxLongEdge = intent.qualityLongEdge(),
+                frameRate = intent.qualityFrameRate(),
+                bitRateOverride = intent.bitRateOverride(),
+                settings = settings,
+                videoOnly = false,
+                skipVideo = true,
+            )
+        } else if (audioOnly) {
+            runAudioSession(target, mediaProjection)
+        } else {
+            runSessionWithReconnect(
+                receiver = target,
+                mediaProjection = mediaProjection,
+                maxLongEdge = intent.qualityLongEdge(),
+                frameRate = intent.qualityFrameRate(),
+                bitRateOverride = intent.bitRateOverride(),
+                settings = settings,
+                videoOnly = videoOnly,
+                skipVideo = false,
+            )
+        }
+    }
+
+    private fun registerProjectionCallback(mediaProjection: MediaProjection) {
+        val cb = object : MediaProjection.Callback() {
+            override fun onStop() {
+                projectionRevoked = true
+            }
+        }
+        projectionCallback = cb
+        runCatching {
+            mediaProjection.registerCallback(cb, Handler(Looper.getMainLooper()))
+        }
+    }
+
+    private fun startMetricNotificationObserver(receiverName: String) {
+        metricJob?.cancel()
         metricJob = scope.launch {
             MirrorController.state.collect { state ->
                 val metrics = metricsText(state) ?: return@collect
-                // POST_NOTIFICATIONS may be denied: the foreground-service
-                // notification itself is exempt, but re-posting it needs the
-                // grant on API 33+; without it the initial notification stays.
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                     ContextCompat.checkSelfPermission(
                         this@MirrorService,
@@ -167,48 +233,12 @@ class MirrorService : Service() {
                 }
                 runCatching {
                     NotificationManagerCompat.from(this@MirrorService)
-                        .notify(NOTIFICATION_ID, buildNotification(target.name, metrics))
+                        .notify(NOTIFICATION_ID, buildNotification(receiverName, metrics))
                 }
-            }
-        }
-
-        sessionJob = scope.launch {
-            if (target.isAudioOnly) {
-                // A device that ONLY advertises audio never takes a mirror session.
-                runAudioSession(target, mediaProjection)
-            } else if (audioOnly && target.pairingPath == PairingPath.HAP) {
-                // macOS rejects every standalone audio-session form we tried
-                // (400 on the audio SETUP); its accepted audio stream only
-                // exists inside a mirroring session. Sound-only therefore runs
-                // the full modern session and simply never starts the encoder.
-                runSession(
-                    receiver = target,
-                    mediaProjection = mediaProjection,
-                    maxLongEdge = intent.qualityLongEdge(),
-                    frameRate = intent.qualityFrameRate(),
-                    bitRateOverride = intent.bitRateOverride(),
-                    skipVideo = true,
-                )
-            } else if (audioOnly) {
-                runAudioSession(target, mediaProjection)
-            } else {
-                runSession(
-                    receiver = target,
-                    mediaProjection = mediaProjection,
-                    maxLongEdge = intent.qualityLongEdge(),
-                    frameRate = intent.qualityFrameRate(),
-                    bitRateOverride = intent.bitRateOverride(),
-                    videoOnly = videoOnly,
-                )
             }
         }
     }
 
-    /**
-     * Audio-only casting. AirPlay 2 receivers (HomePod et al., advertised by
-     * the buffered-audio/PTP feature bits) take the plist session flow; the
-     * rest get classic RAOP. Either way the pump is the same L16 PCM feed.
-     */
     private suspend fun runAudioSession(receiver: AirPlayReceiver, mediaProjection: MediaProjection) {
         if (!hasAudioPermission()) {
             Log.w(TAG, "Audio-only cast without RECORD_AUDIO; failing early")
@@ -223,7 +253,7 @@ class MirrorService : Service() {
         }
     }
 
-    /** AirPlay 2 session: plist SETUPs, ChaCha20-Poly1305 audio, no FairPlay. */
+    @Suppress("LongMethod")
     private suspend fun runAirPlay2AudioSession(receiver: AirPlayReceiver, mediaProjection: MediaProjection) {
         val app = application as KiteApplication
         val airPlay2 = AirPlay2Session(receiver, app.credentialStore, deviceName())
@@ -233,10 +263,9 @@ class MirrorService : Service() {
         try {
             MirrorController.publish(SessionState.Connecting(receiver))
             val stream = airPlay2.connect { MirrorController.requestPin(receiver) }
-
+            recordSuccessfulEndpoint(receiver)
             MirrorController.publish(SessionState.StreamingAudio(receiver))
 
-            // The SETUP declares ALAC (ct=2), so the pump must feed ALAC frames.
             val alac = AlacAudioEncoder(projection = mediaProjection)
             audioEncoder = alac
             audioJob = scope.launch {
@@ -259,19 +288,14 @@ class MirrorService : Service() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "AirPlay 2 audio session ended with an error", e)
-            if (MirrorController.state.value !is SessionState.Failed) {
-                MirrorController.publish(
-                    SessionState.Failed(receiver, pairingFailureReason(e), e),
-                )
-            }
+            publishGuidanceFailure(receiver, e)
         } finally {
             audioJob?.cancel()
-            cleanupSession()
-            stopSelf()
+            cleanupAllAndStop()
         }
     }
 
-    /** Classic RAOP (AirTunes v1) for AirPort Express, shairport-sync and friends. */
+    @Suppress("LongMethod")
     private suspend fun runRaopAudioSession(receiver: AirPlayReceiver, mediaProjection: MediaProjection) {
         val app = application as KiteApplication
         val raop = RaopSession(receiver, app.credentialStore)
@@ -280,18 +304,14 @@ class MirrorService : Service() {
         var pcmSource: AudioPcmSource? = null
         var audioJob: Job? = null
         try {
-            // connect() asks the UI for a password via the provider whenever the
-            // receiver 401s; PasswordRequiredException means the user dismissed.
             MirrorController.publish(SessionState.Connecting(receiver))
             val stream = try {
                 raop.connect { MirrorController.requestPassword(receiver) }
             } catch (e: PasswordRequiredException) {
-                MirrorController.publish(
-                    SessionState.Failed(receiver, pairingFailureReason(e), e),
-                )
+                publishGuidanceFailure(receiver, e)
                 return
             }
-
+            recordSuccessfulEndpoint(receiver)
             MirrorController.publish(SessionState.StreamingAudio(receiver))
 
             val pcm = AudioPcmSource(
@@ -317,30 +337,83 @@ class MirrorService : Service() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Audio session ended with an error", e)
-            if (MirrorController.state.value !is SessionState.Failed) {
-                MirrorController.publish(
-                    SessionState.Failed(receiver, pairingFailureReason(e), e),
-                )
-            }
+            publishGuidanceFailure(receiver, e)
         } finally {
             audioJob?.cancel()
             runCatching { pcmSource?.close() }
-            cleanupSession()
-            stopSelf()
+            cleanupAllAndStop()
         }
     }
 
-    // Session bring-up with per-mode knobs (audio/video/skip-video); the
-    // branches are independent setup steps rather than nested decisions.
-    @Suppress("CyclomaticComplexMethod", "LongMethod")
-    private suspend fun runSession(
+    @Suppress("LongParameterList", "LongMethod")
+    private suspend fun runSessionWithReconnect(
         receiver: AirPlayReceiver,
         mediaProjection: MediaProjection,
         maxLongEdge: Int,
         frameRate: Int,
         bitRateOverride: Int?,
-        videoOnly: Boolean = false,
-        skipVideo: Boolean = false,
+        settings: MirrorSettings,
+        videoOnly: Boolean,
+        skipVideo: Boolean,
+    ) {
+        var attempt = 0
+        try {
+            while (scope.isActive && !manualStopRequested) {
+                try {
+                    runSingleMirrorSession(
+                        receiver = receiver,
+                        mediaProjection = mediaProjection,
+                        maxLongEdge = maxLongEdge,
+                        frameRate = frameRate,
+                        bitRateOverride = bitRateOverride,
+                        settings = settings,
+                        videoOnly = videoOnly,
+                        skipVideo = skipVideo,
+                    )
+                    return
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    val advice = ErrorGuidance.analyze(e)
+                    val canRetry = settings.autoReconnect &&
+                        !manualStopRequested &&
+                        !projectionRevoked &&
+                        advice.isTransient &&
+                        attempt < MAX_RECONNECT_ATTEMPTS
+                    if (!canRetry) {
+                        publishGuidanceFailure(receiver, e)
+                        return
+                    }
+                    attempt++
+                    cleanupAttemptResourcesOnly()
+                    Log.w(TAG, "Transient failure (${advice.title}); reconnect $attempt/$MAX_RECONNECT_ATTEMPTS", e)
+                    MirrorController.publish(
+                        SessionState.Reconnecting(
+                            receiver = receiver,
+                            attempt = attempt,
+                            maxAttempts = MAX_RECONNECT_ATTEMPTS,
+                            reason = advice.title,
+                        ),
+                    )
+                    delay(RECONNECT_BASE_DELAY_MS * attempt)
+                }
+            }
+        } finally {
+            cleanupAllAndStop()
+        }
+    }
+
+    // Propagates lost-connection and cancellation errors back to runSessionWithReconnect.
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "LongParameterList", "ThrowsCount")
+    private suspend fun runSingleMirrorSession(
+        receiver: AirPlayReceiver,
+        mediaProjection: MediaProjection,
+        maxLongEdge: Int,
+        frameRate: Int,
+        bitRateOverride: Int?,
+        settings: MirrorSettings,
+        videoOnly: Boolean,
+        skipVideo: Boolean,
     ) {
         val metrics = currentDisplayMetrics()
         val format = VideoFormat.forDisplay(
@@ -349,49 +422,50 @@ class MirrorService : Service() {
             maxLongEdge = maxLongEdge,
             frameRate = frameRate,
             bitRate = bitRateOverride,
+        ).copy(
+            keyFrameIntervalSeconds = settings.keyFrameIntervalSeconds,
+            bitrateMode = settings.bitrateMode.toCaptureMode(),
+            lowLatency = settings.lowLatencyMode,
+            drmCompatibilityMode = settings.drmCompatibilityMode,
         )
         Log.i(
             TAG,
             "Encoding ${format.width}x${format.height}@${format.frameRate} " +
-                "at ${format.bitRate / 1_000_000.0} Mbps " +
-                "(display ${metrics.widthPixels}x${metrics.heightPixels}, maxLongEdge=$maxLongEdge)",
+                "mode=${format.bitrateMode} ll=${format.lowLatency} " +
+                "at ${format.bitRate / 1_000_000.0} Mbps",
         )
 
         val app = application as KiteApplication
-        // Route the whole process over the Wi-Fi network for the session's
-        // lifetime: with a VPN up, RTSP/data/audio sockets would otherwise go
-        // through the tunnel and the receiver would never see them.
         val wifi = WifiNetworkResolver.find(application).network
-        val unbindWifi = runCatching {
+        runCatching {
             val cm = getSystemService(android.net.ConnectivityManager::class.java)
             cm.bindProcessToNetwork(wifi)
-            wifi != null
-        }.getOrDefault(false)
+        }
 
         val mirrorSession = MirrorSession(
             receiver = receiver,
             credentialStore = app.credentialStore,
-            // The user-visible device name ("Henry's Phone"), not the model —
-            // receivers show this in their AirPlay prompts.
             clientName = deviceName(),
         )
         session = mirrorSession
-        // The receiver stopped mirroring (closed its data channel): end the
-        // session instead of streaming into a dead socket until something
-        // throws somewhere unguarded.
+
+        var connectionLostError: Throwable? = null
+        val streamingScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         mirrorSession.onConnectionLost = { error ->
-            MirrorController.publish(
-                SessionState.Failed(receiver, getString(R.string.error_receiver_disconnected), error),
-            )
-            sessionJob?.cancel()
+            connectionLostError = error
+            streamingScope.cancel()
         }
 
-        // Mirror the session's own state out to the UI.
-        scope.launch {
-            mirrorSession.state.collect { MirrorController.publish(it) }
+        val stateRelayJob = streamingScope.launch {
+            mirrorSession.state.collect { st ->
+                if (st !is SessionState.Failed) {
+                    MirrorController.publish(st)
+                }
+            }
         }
 
         var audioJob: Job? = null
+        var statsJob: Job? = null
         try {
             val stream = mirrorSession.connect(
                 width = format.width,
@@ -400,12 +474,11 @@ class MirrorService : Service() {
                 pinProvider = { MirrorController.requestPin(receiver) },
                 passwordProvider = { MirrorController.requestPassword(receiver) },
                 videoEnabled = !skipVideo,
+                lowLatencyMode = settings.lowLatencyMode,
             )
+            recordSuccessfulEndpoint(receiver)
 
-            // Sound-only keeps the whole modern session (its audio SETUP is the
-            // only shape macOS accepts) and simply never starts the encoder.
             val screenEncoder = if (skipVideo) {
-                Log.i(TAG, "Sound-only session: video encoder skipped")
                 null
             } else {
                 ScreenEncoder(
@@ -414,10 +487,10 @@ class MirrorService : Service() {
                     format = format,
                     maxLongEdge = maxLongEdge,
                     bitRateOverride = bitRateOverride,
-                ).also { encoder ->
+                ).also { enc ->
                     liveWidth = format.width
                     liveHeight = format.height
-                    encoder.onDimensionsChanged = { width, height ->
+                    enc.onDimensionsChanged = { width, height ->
                         liveWidth = width
                         liveHeight = height
                     }
@@ -425,32 +498,15 @@ class MirrorService : Service() {
             }
             encoder = screenEncoder
 
-            // Audio encoder reuses the same projection grant. The stream can be null
-            // if the receiver declined audio or if capture is unavailable.
-            // Assigned to the field, not a local, so cleanupSession() can close it —
-            // AudioRecord is exclusive and a leak breaks the next session's audio.
-            // Without the mic permission there is no capture; video carries on.
-            // Both paths carry ALAC now: legacy receivers validate ELD frames
-            // against Apple's encoder header and drop all others, and macOS's
-            // own verified-sound path (doubletake's default) is ALAC as well.
-            audioEncoder = when {
-                // "Screen without sound" from the long-press menu.
-                videoOnly -> null
+            audioEncoder = buildAudioEncoder(
+                mediaProjection = mediaProjection,
+                mirrorSession = mirrorSession,
+                settings = settings,
+                videoOnly = videoOnly,
+            )
 
-                !hasAudioPermission() -> {
-                    Log.w(TAG, "RECORD_AUDIO not granted; casting video without sound")
-                    null
-                }
-
-                mirrorSession.modernAudio != null || mirrorSession.audioStream != null ->
-                    AlacAudioEncoder(projection = mediaProjection)
-
-                else -> null
-            }
-
-            // Start audio feed before video so priming packets arrive first.
             audioJob = audioEncoder?.let { audio ->
-                scope.launch {
+                streamingScope.launch {
                     try {
                         pumpAudio(audio, mirrorSession)
                     } catch (e: Exception) {
@@ -459,63 +515,148 @@ class MirrorService : Service() {
                 }
             }
 
-            // Statistics ticker; cheap enough to run while mirroring.
-            scope.launch {
-                while (isActive) {
-                    delay(STATS_INTERVAL_MS)
-                    mirrorSession.refreshStatistics()
-                }
-            }
+            statsJob = startStatsAndCongestionTicker(
+                tickerScope = streamingScope,
+                mirrorSession = mirrorSession,
+                stream = stream,
+                screenEncoder = screenEncoder,
+                targetBitRate = format.bitRate,
+                adaptiveEnabled = settings.bitrateMode == BitrateControlMode.AUTO,
+            )
 
-            // Sound-only has no encoder; the session lives on its audio stream
-            // and the feedback/heartbeat loops inside MirrorSession.
             if (screenEncoder != null && stream != null) {
                 var sentConfig = false
                 screenEncoder.frames()
-                    .buffer(FRAME_BUFFER, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+                    .buffer(
+                        FRAME_BUFFER,
+                        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+                    )
                     .collect { frame ->
                         if (frame.isCodecConfig) {
-                            // avcC has to arrive before any slice or the receiver drops everything.
-                            val sets = NaluRepacker.parseParameterSets(frame.data)
-                            if (sets == null) {
-                                Log.e(TAG, "Codec config had no SPS/PPS pair; cannot start the decoder")
-                                return@collect
-                            }
-                            // liveWidth/Height, not `format`: rotation may have swapped
-                            // the geometry since the session started.
+                            val sets = NaluRepacker.parseParameterSets(frame.data) ?: return@collect
                             stream.sendCodecConfig(sets, liveWidth, liveHeight, frame.presentationTimeUs)
                             sentConfig = true
                             return@collect
                         }
-                        if (!sentConfig) return@collect // Wait for config; slices before it are useless.
+                        if (!sentConfig) return@collect
                         stream.sendVideoFrame(frame.data, frame.presentationTimeUs)
                     }
             } else {
-                // Park the coroutine for the session's lifetime; the audio pump
-                // and MirrorSession's feedback loop keep everything alive.
-                delay(Long.MAX_VALUE)
+                streamingScope.launch { delay(Long.MAX_VALUE) }.join()
             }
-        } catch (e: Exception) {
-            audioJob?.cancel()
-            Log.e(TAG, "Mirroring session ended with an error", e)
-            // MirrorSession already published Failed for its own errors.
-            if (MirrorController.state.value !is SessionState.Failed) {
-                MirrorController.publish(
-                    SessionState.Failed(receiver, pairingFailureReason(e), e),
-                )
-            }
+            connectionLostError?.let { throw it }
+        } catch (e: CancellationException) {
+            val lost = connectionLostError
+            if (lost != null) throw lost
+            throw e
         } finally {
-            cleanupSession()
-            stopSelf()
+            statsJob?.cancel()
+            audioJob?.cancel()
+            stateRelayJob.cancel()
+            streamingScope.cancel()
+            cleanupAttemptResourcesOnly()
         }
     }
 
+    private fun buildAudioEncoder(
+        mediaProjection: MediaProjection,
+        mirrorSession: MirrorSession,
+        settings: MirrorSettings,
+        videoOnly: Boolean,
+    ): AudioFrameSource? {
+        if (videoOnly) return null
+        if (!hasAudioPermission()) {
+            Log.w(TAG, "RECORD_AUDIO not granted; casting video without sound")
+            return null
+        }
+        if (mirrorSession.modernAudio == null && mirrorSession.audioStream == null) return null
+
+        val app = application as KiteApplication
+        val audioManager = getSystemService(AudioManager::class.java)
+        val preferredMic = if (settings.videoCallMode) {
+            app.audioRouting.resolveInputDevice(settings.preferredMicDeviceId)
+        } else {
+            null
+        }
+        return AlacAudioEncoder(
+            projection = mediaProjection,
+            mixMicrophone = settings.videoCallMode && settings.mixMicrophoneInCalls,
+            preferredMicDevice = preferredMic,
+            audioManager = audioManager,
+            onMicSilencedChanged = { silenced -> MirrorController.publishMicSilenced(silenced) },
+        )
+    }
+
+    @Suppress("LongParameterList")
+    private fun startStatsAndCongestionTicker(
+        tickerScope: CoroutineScope,
+        mirrorSession: MirrorSession,
+        stream: MirrorStream?,
+        screenEncoder: ScreenEncoder?,
+        targetBitRate: Int,
+        adaptiveEnabled: Boolean,
+    ): Job = tickerScope.launch {
+        var currentBitRate = targetBitRate
+        var lastSlowWrites = 0L
+        var stableTicks = 0
+        while (isActive) {
+            delay(STATS_INTERVAL_MS)
+            mirrorSession.refreshStatistics()
+            if (!adaptiveEnabled || stream == null || screenEncoder == null) continue
+            val stats = stream.statistics
+            val slowDelta = stats.slowWriteCount - lastSlowWrites
+            lastSlowWrites = stats.slowWriteCount
+            if (slowDelta > 0 || stats.lastWriteMs >= CONGESTION_WRITE_MS) {
+                stableTicks = 0
+                val reduced = (currentBitRate * 0.80).toInt().coerceAtLeast(VideoFormat.BIT_RATE_MIN_BPS)
+                if (reduced < currentBitRate) {
+                    currentBitRate = reduced
+                    screenEncoder.setBitRate(currentBitRate)
+                    screenEncoder.requestKeyFrame()
+                    Log.i(TAG, "[ABR] Wi-Fi congestion detected -> stepped bitrate to ${currentBitRate / 1000} kbps")
+                }
+            } else {
+                stableTicks++
+                if (stableTicks >= ABR_RECOVERY_TICKS && currentBitRate < targetBitRate) {
+                    stableTicks = 0
+                    val raised = (currentBitRate * 1.10).toInt().coerceAtMost(targetBitRate)
+                    if (raised > currentBitRate) {
+                        currentBitRate = raised
+                        screenEncoder.setBitRate(currentBitRate)
+                        Log.i(TAG, "[ABR] Link recovered -> stepped bitrate to ${currentBitRate / 1000} kbps")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun recordSuccessfulEndpoint(receiver: AirPlayReceiver) {
+        val host = receiver.address.hostAddress ?: return
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                (application as KiteApplication).settingsRepository.addKnownEndpoint(host, receiver.port)
+            }
+        }
+    }
+
+    private fun publishGuidanceFailure(receiver: AirPlayReceiver, e: Exception) {
+        val requiresRepairing = e is PairingException &&
+            e.message?.contains("re-pairing", ignoreCase = true) == true
+        if (e is PairingException && e.tlvError == TlvError.BACKOFF) {
+            MirrorController.publish(
+                SessionState.Failed(receiver, getString(R.string.error_pairing_throttled), e, requiresRepairing),
+            )
+            return
+        }
+        val advice = ErrorGuidance.analyze(e)
+        val combined = "${advice.title}: ${advice.detail}\n${advice.hint}"
+        MirrorController.publish(
+            SessionState.Failed(receiver, combined, e, requiresRepairing),
+        )
+    }
+
     private suspend fun pumpAudio(encoder: AudioFrameSource, session: MirrorSession) {
-        // Modern (macOS) sessions stream ChaCha-sealed AAC-ELD over their own
-        // RTP sender; legacy receivers use the AES-CBC AudioStream.
         session.modernAudio?.let { modern ->
-            // Refresh the audio TimeAnnounce once per second (doubletake's
-            // sync ticker) so the receiver keeps the RTP↔timeline mapping.
             val syncJob = scope.launch {
                 while (isActive) {
                     delay(1_000)
@@ -541,46 +682,48 @@ class MirrorService : Service() {
     }
 
     private fun stopMirroring() {
+        manualStopRequested = true
         sessionJob?.cancel()
-        // Session teardown closes sockets that may be mid-write on a dead TCP
-        // peer; on the main thread that stalls input for minutes (observed as
-        // a 60 s ANR). The UI switch to Idle is immediate either way.
-        scope.launch(Dispatchers.IO) { cleanupSession() }
+        scope.launch(Dispatchers.IO) { cleanupAll() }
+        MirrorController.publishMicSilenced(false)
         MirrorController.publish(SessionState.Idle)
         stopSelf()
     }
 
-    private fun cleanupSession() {
-        metricJob?.cancel()
-        metricJob = null
+    private fun cleanupAttemptResourcesOnly() {
         runCatching { encoder?.close() }
-        // AudioRecord holds an exclusive capture session; leaking it makes the
-        // next mirroring attempt fail to open audio at all.
         runCatching { audioEncoder?.close() }
         runCatching { session?.close() }
         runCatching { raopSession?.close() }
         runCatching { airPlay2Session?.close() }
-        runCatching { projection?.stop() }
         encoder = null
         audioEncoder = null
         session = null
         raopSession = null
         airPlay2Session = null
+    }
+
+    private fun cleanupAllAndStop() {
+        cleanupAll()
+        stopSelf()
+    }
+
+    private fun cleanupAll() {
+        metricJob?.cancel()
+        metricJob = null
+        cleanupAttemptResourcesOnly()
+        projectionCallback?.let { cb -> runCatching { projection?.unregisterCallback(cb) } }
+        projectionCallback = null
+        runCatching { projection?.stop() }
         projection = null
         releaseWakeLock()
-        // Undo the Wi-Fi process binding so normal (VPN-inclusive) routing
-        // resumes when we are not casting.
+        runCatching { (application as KiteApplication).audioRouting.restoreDefaultRouting() }
         runCatching {
             getSystemService(android.net.ConnectivityManager::class.java)
                 .bindProcessToNetwork(null)
         }
     }
 
-    /**
-     * Wi-Fi power saving parks the radio between beacons when the screen is off,
-     * which shows up as multi-hundred-millisecond stalls in the video. The wake
-     * lock is what keeps the session smooth.
-     */
     private fun acquireWakeLock() {
         val power = getSystemService(PowerManager::class.java)
         wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
@@ -594,10 +737,6 @@ class MirrorService : Service() {
         wakeLock = null
     }
 
-    /**
-     * "1920 × 1080 @ 30 fps · 12.3 Mbps", or just the live rate for audio-only
-     * states — the same line the status panel shows.
-     */
     private fun metricsText(state: SessionState): String? = when (state) {
         is SessionState.Mirroring -> getString(
             R.string.mirroring_resolution,
@@ -608,10 +747,15 @@ class MirrorService : Service() {
 
         is SessionState.StreamingAudio -> rateText(state.kilobitsPerSecond)
 
+        is SessionState.Reconnecting -> getString(
+            R.string.state_reconnecting_progress,
+            state.attempt,
+            state.maxAttempts,
+        )
+
         else -> null
     }
 
-    /** kbps under 1 Mbps, Mbps above it, so the number stays short either way. */
     private fun rateText(kilobitsPerSecond: Long): String = if (kilobitsPerSecond < 1_000) {
         getString(R.string.mirroring_rate_kbps, kilobitsPerSecond)
     } else {
@@ -644,22 +788,10 @@ class MirrorService : Service() {
             .build()
     }
 
-    /** Throttled receivers need a clear instruction, not the raw protocol error. */
-    private fun pairingFailureReason(e: Exception): String =
-        if (e is PairingException && e.tlvError == TlvError.BACKOFF) {
-            getString(R.string.error_pairing_throttled)
-        } else {
-            e.message ?: getString(R.string.error_cast_interrupted)
-        }
-
     private fun hasAudioPermission(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
-    /**
-     * The name the user gave this device in system settings ("Henry's Phone"),
-     * falling back to the model. Receivers surface it in their AirPlay prompts.
-     */
     private fun deviceName(): String = Settings.Global.getString(contentResolver, "device_name")
         ?: Build.MODEL
         ?: "Android"
@@ -685,11 +817,10 @@ class MirrorService : Service() {
 
     private fun Intent.qualityFrameRate(): Int = getIntExtra(EXTRA_FRAME_RATE, DEFAULT_FRAME_RATE)
 
-    /** Zero means "let the size decide", matching [VideoFormat.forDisplay]'s null. */
     private fun Intent.bitRateOverride(): Int? = getIntExtra(EXTRA_BIT_RATE, 0).takeIf { it > 0 }
 
     override fun onDestroy() {
-        cleanupSession()
+        cleanupAll()
         scope.cancel()
         MirrorController.onPublish = null
         super.onDestroy()
@@ -698,15 +829,19 @@ class MirrorService : Service() {
     companion object {
         private const val TAG = "MirrorService"
         private const val NOTIFICATION_ID = 1001
-        private const val WAKE_LOCK_TAG = "kite:mirroring"
+        private const val WAKE_LOCK_TAG = "roku:mirroring"
         private const val WAKE_LOCK_TIMEOUT_MS = 4 * 60 * 60 * 1000L
         private const val STATS_INTERVAL_MS = 1_000L
         private const val FRAME_BUFFER = 8
         private const val DEFAULT_MAX_LONG_EDGE = 1920
         private const val DEFAULT_FRAME_RATE = 30
+        private const val MAX_RECONNECT_ATTEMPTS = 3
+        private const val RECONNECT_BASE_DELAY_MS = 1_500L
+        private const val CONGESTION_WRITE_MS = 45L
+        private const val ABR_RECOVERY_TICKS = 5
 
-        const val ACTION_START = "com.henry.kite.START"
-        const val ACTION_STOP = "com.henry.kite.STOP"
+        const val ACTION_START = "com.dhatech.roku.cast.START"
+        const val ACTION_STOP = "com.dhatech.roku.cast.STOP"
 
         private const val EXTRA_RECEIVER = "receiver"
         private const val EXTRA_RESULT_CODE = "resultCode"
@@ -717,13 +852,7 @@ class MirrorService : Service() {
         private const val EXTRA_AUDIO_ONLY = "audioOnly"
         private const val EXTRA_VIDEO_ONLY = "videoOnly"
 
-        /**
-         * @param maxLongEdge [VideoFormat.LONG_EDGE_UNLIMITED] keeps the native size.
-         * @param bitRate bits per second, or 0 to derive it from the frame size.
-         * @param audioOnly cast just the sound (receiver-card long-press), even
-         *   to a receiver that also supports mirroring.
-         * @param videoOnly cast the screen with the audio feed skipped.
-         */
+        @Suppress("LongParameterList")
         fun start(
             context: Context,
             receiver: AirPlayReceiver,

@@ -7,8 +7,17 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.util.Log
+import com.henry.kite.airplay.plist.BinaryPlistReader
+import com.henry.kite.airplay.plist.asData
+import com.henry.kite.airplay.plist.asDict
+import com.henry.kite.airplay.plist.asLong
+import com.henry.kite.airplay.plist.asString
+import com.henry.kite.airplay.rtsp.RtspClient
+import com.henry.kite.airplay.rtsp.RtspRequest
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,9 +26,11 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.util.concurrent.atomic.AtomicReference
 import javax.jmdns.JmDNS
 import javax.jmdns.ServiceEvent
 import javax.jmdns.ServiceInfo
@@ -28,20 +39,17 @@ import javax.jmdns.ServiceListener
 /**
  * Browses `_airplay._tcp.local` (mirroring receivers) and `_raop._tcp.local`
  * (classic AirPlay audio-only devices) via mDNS, plus the uxplay-style BLE
- * beacon (Apple data unit 0x09 carrying an IPv4:port) for networks where
- * multicast is blocked, and emits the merged receiver list on every change.
- *
- * JmDNS is used instead of [android.net.nsd.NsdManager] because NsdManager
- * resolves one service at a time and drops most TXT keys, and `features` decides
- * the entire pairing path.
- *
- * A multicast lock is held for the lifetime of the flow. Without it the Wi-Fi
- * driver filters the multicast group as soon as the screen turns off.
+ * beacon (Apple data unit 0x09 carrying an IPv4:port) and fast TCP `/info`
+ * probing for saved/manual Roku and AirPlay endpoints.
  */
 class ReceiverDiscovery(private val context: Context) {
 
     /** Bumped by [refresh]; restarting the flows re-browses from scratch. */
     private val refreshTrigger = MutableStateFlow(0)
+
+    private val probeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val knownEndpoints = AtomicReference<List<Pair<String, Int>>>(emptyList())
+    private val probedReceivers = MutableStateFlow<Map<String, AirPlayReceiver>>(emptyMap())
 
     /**
      * Last known discovery results, retained across flow restarts. Returning to
@@ -54,11 +62,6 @@ class ReceiverDiscovery(private val context: Context) {
     @Volatile
     private var bleSnapshot: Map<String, AirPlayReceiver> = emptyMap()
 
-    // A network switch or reconnect leaves JmDNS bound to the old interface,
-    // where it never hears anything again. Restarting the browse is the only
-    // recovery, so it happens here automatically on Wi-Fi changes — there is
-    // deliberately no manual refresh button. The callback lives as long as the
-    // process (application-scoped singleton); there is nothing to unregister.
     init {
         val connectivity = context.applicationContext
             .getSystemService(ConnectivityManager::class.java)
@@ -77,25 +80,133 @@ class ReceiverDiscovery(private val context: Context) {
         }
     }
 
-    /** Re-runs mDNS browsing and the BLE scan. */
+    /** Updates recently used endpoints so they can be fast-probed on startup/refresh. */
+    fun setKnownEndpoints(endpoints: List<Pair<String, Int>>) {
+        knownEndpoints.set(endpoints.distinct())
+        probeScope.launch { probeSavedEndpoints() }
+    }
+
+    /** Re-runs mDNS browsing, BLE scan, and known-endpoint TCP probes. */
     fun refresh() {
         refreshTrigger.value += 1
+        probeScope.launch { probeSavedEndpoints() }
+    }
+
+    /** Probes an arbitrary IP/hostname directly via RTSP `GET /info`. */
+    suspend fun addManualEndpoint(host: String, port: Int = DEFAULT_AIRPLAY_PORT): Result<AirPlayReceiver> =
+        withContext(Dispatchers.IO) {
+            val trimmed = host.trim()
+            if (trimmed.isEmpty()) {
+                return@withContext Result.failure(IllegalArgumentException("Host or IP address cannot be empty"))
+            }
+            val probed = probeEndpoint(trimmed, port, DiscoverySource.MANUAL_IP)
+                ?: return@withContext Result.failure(
+                    IllegalStateException(
+                        "No AirPlay receiver answered at $trimmed:$port. " +
+                            "Verify AirPlay is enabled on your Roku/TV and both devices share the same Wi-Fi.",
+                    ),
+                )
+            val key = "${probed.address.hostAddress}:${probed.port}"
+            probedReceivers.value = probedReceivers.value + (key to probed)
+            Result.success(probed)
+        }
+
+    private suspend fun probeSavedEndpoints() {
+        val targets = knownEndpoints.get()
+        if (targets.isEmpty()) return
+        val updated = LinkedHashMap<String, AirPlayReceiver>(probedReceivers.value)
+        for ((host, port) in targets) {
+            val key = "$host:$port"
+            if (mdnsSnapshot.containsKey(key)) continue
+            val receiver = probeEndpoint(host, port, DiscoverySource.SAVED_PROBE)
+            if (receiver != null) {
+                updated["${receiver.address.hostAddress}:${receiver.port}"] = receiver
+            }
+        }
+        probedReceivers.value = updated
+    }
+
+    private suspend fun probeEndpoint(host: String, port: Int, source: DiscoverySource): AirPlayReceiver? {
+        val address = runCatching { InetAddress.getByName(host) }.getOrNull() ?: return null
+        val client = RtspClient(address, port, clientName = PROBE_CLIENT_NAME)
+        return try {
+            client.connect(timeoutMs = PROBE_TIMEOUT_MS)
+            val response = client.send(
+                RtspRequest(
+                    "GET",
+                    "/info",
+                    headers = mapOf("Content-Type" to "application/x-apple-binary-plist"),
+                ),
+            )
+            if (response.isSuccess && response.body.isNotEmpty()) {
+                parseInfoReceiver(address, port, response.body, source)
+            } else {
+                AirPlayReceiver(
+                    name = host,
+                    address = address,
+                    port = port,
+                    deviceId = null,
+                    model = null,
+                    sourceVersion = null,
+                    publicIdentifier = null,
+                    publicKeyHex = null,
+                    features = FeatureFlags(DEFAULT_MANUAL_FEATURES),
+                    discoverySource = source,
+                )
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "Endpoint probe failed for $host:$port (${e.message})")
+            null
+        } finally {
+            runCatching { client.close() }
+        }
+    }
+
+    private fun parseInfoReceiver(
+        address: InetAddress,
+        port: Int,
+        body: ByteArray,
+        source: DiscoverySource,
+    ): AirPlayReceiver? {
+        val dict = runCatching { BinaryPlistReader.read(body).asDict() }.getOrNull() ?: return null
+        val txt = linkedMapOf<String, String>()
+        dict["model"]?.asString()?.let { txt["model"] = it }
+        dict["manufacturer"]?.asString()?.let { txt["manufacturer"] = it }
+        dict["osInfo"]?.asString()?.let { txt["osinfo"] = it }
+        dict["deviceID"]?.asString()?.let { txt["deviceid"] = it }
+        dict["sourceVersion"]?.asString()?.let { txt["srcvers"] = it }
+        val name = dict["name"]?.asString()?.takeIf { it.isNotBlank() }
+            ?: dict["model"]?.asString()
+            ?: address.hostAddress.orEmpty()
+        val featuresRaw = dict["features"]?.asLong()
+            ?: FeatureFlags.parse(dict["features"]?.asString()).raw
+        val pkHex = dict["pk"]?.asData()?.joinToString("") { "%02x".format(it) }
+        return AirPlayReceiver(
+            name = name,
+            address = address,
+            port = port,
+            deviceId = dict["deviceID"]?.asString() ?: dict["macAddress"]?.asString(),
+            model = dict["model"]?.asString(),
+            sourceVersion = dict["sourceVersion"]?.asString(),
+            publicIdentifier = dict["pi"]?.asString(),
+            publicKeyHex = pkHex,
+            features = FeatureFlags(featuresRaw),
+            txtRecords = txt,
+            discoverySource = source,
+        )
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
     fun receivers(): Flow<List<AirPlayReceiver>> = combine(
         refreshTrigger.flatMapLatest { mdnsReceivers() },
         refreshTrigger.flatMapLatest { bleReceivers() },
-    ) { mdns, ble ->
-        // One endpoint often carries several mDNS services — a device can
-        // advertise both _airplay (mirroring) and _raop (audio-only), and
-        // TV boxes run several server apps side by side. The list keys on
-        // host:port, so dedupe on exactly that; among duplicates prefer
-        // the mirroring-capable advertisement (mDNS entries come first, so
-        // their richer metadata wins over a bare BLE beacon). Genuinely
-        // separate server apps listen on different ports and stay distinct.
-        (mdns.values + ble.values)
-            .sortedByDescending { it.supportsMirroring }
+        probedReceivers,
+    ) { mdns, ble, probed ->
+        (mdns.values + ble.values + probed.values)
+            .sortedWith(
+                compareByDescending<AirPlayReceiver> { it.supportsMirroring }
+                    .thenBy { it.discoverySource.ordinal },
+            )
             .distinctBy { "${it.address.hostAddress}:${it.port}" }
             .sortedBy { it.name.lowercase() }
     }
@@ -141,98 +252,9 @@ class ReceiverDiscovery(private val context: Context) {
 
         publish() // Seed the UI with the last known state immediately.
 
-        /**
-         * True when any seen `_raop` instance belongs to this endpoint. The
-         * _raop instance name is "<MAC>@<Name>" and its MAC equals the
-         * `_airplay` TXT deviceid, so a prefix match ties the audio service to
-         * the mirroring endpoint even when JmDNS never resolves the _raop
-         * record.
-         */
-        fun endpointHasRaopService(receiver: AirPlayReceiver, resolvedName: String): Boolean {
-            // The _raop instance prefix is the MAC without separators
-            // ("DE72B27FD155") while the _airplay TXT deviceid carries colons
-            // ("DE:72:B2:7F:D1:55") — compare both stripped.
-            val deviceId = receiver.deviceId?.replace(":", "") ?: return false
-            return raopServiceNames.any { candidate ->
-                candidate == resolvedName ||
-                    candidate.substringBefore('@', missingDelimiterValue = "\u0000")
-                        .equals(deviceId, ignoreCase = true)
-            }
-        }
-
-        val listener = object : ServiceListener {
-            override fun serviceAdded(event: ServiceEvent) {
-                // TXT records arrive with serviceResolved, so just ask for them.
-                Log.i(TAG, "Service added: ${event.name}")
-                if (event.type.startsWith("_raop.")) {
-                    raopServiceNames.add(event.name)
-                }
-                event.dns.requestServiceInfo(event.type, event.name, RESOLVE_TIMEOUT_MS)
-            }
-
-            override fun serviceRemoved(event: ServiceEvent) {
-                Log.i(TAG, "Service removed: ${event.name}")
-                if (event.type.startsWith("_raop.")) {
-                    raopServiceNames.remove(event.name)
-                }
-                val receiver = event.info.toReceiver()
-                val key = receiver?.let { "${it.address.hostAddress}:${it.port}" } ?: event.name
-                if (found.remove(key) != null) publish()
-            }
-
-            override fun serviceResolved(event: ServiceEvent) {
-                val receiver = event.info.toReceiver()
-                if (receiver == null) {
-                    Log.w(TAG, "Resolved ${event.name} but no usable IPv4 address; skipping")
-                    return
-                }
-                // JmDNS re-resolves the same service repeatedly, and the
-                // address set it reports drifts between a link-local IPv6 and
-                // the LAN IPv4. Three guards keep one physical device as one
-                // entry: an IPv4 resolution replaces any IPv6-only entry for
-                // the same device id, an IPv6 resolution is skipped when we
-                // already hold that device's IPv4, and different endpoints
-                // with the same id (spoofed devices) still stay separate
-                // because the merge below keys on the endpoint.
-                val sameDeviceWithIpv4 = receiver.deviceId != null && found.values.any {
-                    it.deviceId == receiver.deviceId && it.address is Inet4Address
-                }
-                if (receiver.address !is Inet4Address && sameDeviceWithIpv4) {
-                    return
-                }
-                if (receiver.address is Inet4Address) {
-                    // The LAN IPv4 supersedes any link-local IPv6 entry we
-                    // collected first for the same device.
-                    found.entries.removeAll {
-                        it.value.deviceId == receiver.deviceId &&
-                            it.value.address !is Inet4Address &&
-                            it.key != "${receiver.address.hostAddress}:${receiver.port}"
-                    }
-                }
-                // One physical device often advertises BOTH `_airplay` and
-                // `_raop` on the same port (every Mac does). Key on the
-                // endpoint and fold them together, or the list flickers an
-                // "audio only" entry depending on which service resolved
-                // first.
-                val key = "${receiver.address.hostAddress}:${receiver.port}"
-                val existing = found[key]
-                val withAudioFlag = if (endpointHasRaopService(receiver, event.name)) {
-                    receiver.copy(hasAudioOnlyService = true)
-                } else {
-                    receiver
-                }
-                val merged = if (existing == null) withAudioFlag else existing.mergedWith(withAudioFlag)
-                Log.i(TAG, "Resolved receiver: $merged")
-                found[key] = merged
-                publish()
-            }
-        }
+        val listener = createMdnsListener(found, raopServiceNames, ::publish)
 
         try {
-            // JmDNS.create() performs a reverse DNS lookup on the local address,
-            // which blocks the thread. Move to IO before touching it. With a VPN
-            // up, WifiManager reports no address; resolve via the Wi-Fi network's
-            // LinkProperties so JmDNS binds to the right interface either way.
             val address = withContext(Dispatchers.IO) {
                 WifiNetworkResolver.find(context).localAddress ?: wifiManager.localInet4Address()
             }
@@ -250,6 +272,8 @@ class ReceiverDiscovery(private val context: Context) {
                 Log.i(TAG, "Listening on $serviceType")
             }
             publish()
+            burstListReceivers(instance, found)
+            publish()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start mDNS browsing", e)
             close(e)
@@ -266,6 +290,87 @@ class ReceiverDiscovery(private val context: Context) {
             raopServiceNames.clear()
         }
     }.conflate()
+
+    @Suppress("InjectDispatcher")
+    private suspend fun burstListReceivers(instance: JmDNS, found: MutableMap<String, AirPlayReceiver>) {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                instance.list(SERVICE_TYPES[0], LIST_BURST_MS).forEach { info ->
+                    info.toReceiver()?.let { r ->
+                        val key = "${r.address.hostAddress}:${r.port}"
+                        found[key] = found[key]?.mergedWith(r) ?: r
+                    }
+                }
+            }
+        }
+    }
+
+    private fun createMdnsListener(
+        found: MutableMap<String, AirPlayReceiver>,
+        raopServiceNames: MutableSet<String>,
+        publish: () -> Unit,
+    ): ServiceListener = object : ServiceListener {
+        override fun serviceAdded(event: ServiceEvent) {
+            Log.i(TAG, "Service added: ${event.name}")
+            if (event.type.startsWith("_raop.")) {
+                raopServiceNames.add(event.name)
+            }
+            event.dns.requestServiceInfo(event.type, event.name, RESOLVE_TIMEOUT_MS)
+        }
+
+        override fun serviceRemoved(event: ServiceEvent) {
+            Log.i(TAG, "Service removed: ${event.name}")
+            if (event.type.startsWith("_raop.")) {
+                raopServiceNames.remove(event.name)
+            }
+            val receiver = event.info.toReceiver()
+            val key = receiver?.let { "${it.address.hostAddress}:${it.port}" } ?: event.name
+            if (found.remove(key) != null) publish()
+        }
+
+        override fun serviceResolved(event: ServiceEvent) {
+            val receiver = event.info.toReceiver()
+            if (receiver == null) {
+                Log.w(TAG, "Resolved ${event.name} but no usable IPv4 address; skipping")
+                return
+            }
+            val sameDeviceWithIpv4 = receiver.deviceId != null && found.values.any {
+                it.deviceId == receiver.deviceId && it.address is Inet4Address
+            }
+            if (receiver.address !is Inet4Address && sameDeviceWithIpv4) return
+            if (receiver.address is Inet4Address) {
+                found.entries.removeAll {
+                    it.value.deviceId == receiver.deviceId &&
+                        it.value.address !is Inet4Address &&
+                        it.key != "${receiver.address.hostAddress}:${receiver.port}"
+                }
+            }
+            val key = "${receiver.address.hostAddress}:${receiver.port}"
+            val existing = found[key]
+            val withAudioFlag = if (endpointHasRaopService(raopServiceNames, receiver, event.name)) {
+                receiver.copy(hasAudioOnlyService = true)
+            } else {
+                receiver
+            }
+            val merged = if (existing == null) withAudioFlag else existing.mergedWith(withAudioFlag)
+            Log.i(TAG, "Resolved receiver: $merged")
+            found[key] = merged
+            publish()
+        }
+    }
+
+    private fun endpointHasRaopService(
+        raopServiceNames: Set<String>,
+        receiver: AirPlayReceiver,
+        resolvedName: String,
+    ): Boolean {
+        val deviceId = receiver.deviceId?.replace(":", "") ?: return false
+        return raopServiceNames.any { candidate ->
+            candidate == resolvedName ||
+                candidate.substringBefore('@', missingDelimiterValue = "\u0000")
+                    .equals(deviceId, ignoreCase = true)
+        }
+    }
 
     /**
      * BLE beacon endpoints, keyed by host:port. The first emission — the last
@@ -291,6 +396,11 @@ class ReceiverDiscovery(private val context: Context) {
         val SERVICE_TYPES = arrayOf("_airplay._tcp.local.", "_raop._tcp.local.")
         const val MULTICAST_LOCK_TAG = "kite-mdns"
         const val RESOLVE_TIMEOUT_MS = 3_000L
+        const val LIST_BURST_MS = 800L
+        const val DEFAULT_AIRPLAY_PORT = 7_000
+        const val PROBE_TIMEOUT_MS = 1_500
+        const val PROBE_CLIENT_NAME = "RokuCastProbe"
+        const val DEFAULT_MANUAL_FEATURES = 1L shl 7
     }
 }
 

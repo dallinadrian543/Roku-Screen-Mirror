@@ -7,17 +7,21 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+data class CastTarget(val receiver: AirPlayReceiver, val audioOnly: Boolean = false, val videoOnly: Boolean = false)
+
 /**
  * Shared handle between the UI and [MirrorService].
- *
- * The session outlives any one Activity, so state lives here rather than in a
- * ViewModel. A process-wide object is enough because only one mirroring session
- * can exist at a time.
  */
 object MirrorController {
 
     private val _state = MutableStateFlow<SessionState>(SessionState.Idle)
     val state: StateFlow<SessionState> = _state.asStateFlow()
+
+    private val _micSilencedByCall = MutableStateFlow(false)
+    val micSilencedByCall: StateFlow<Boolean> = _micSilencedByCall.asStateFlow()
+
+    var lastCastTarget: CastTarget? = null
+        private set
 
     /** Set by the ViewModel; the service calls it when a receiver wants its PIN. */
     var onPinRequired: ((AirPlayReceiver) -> Unit)? = null
@@ -31,15 +35,19 @@ object MirrorController {
     private var pendingPin: CompletableDeferred<String?>? = null
     private var pendingPassword: CompletableDeferred<String?>? = null
 
+    internal fun recordTarget(target: CastTarget) {
+        lastCastTarget = target
+    }
+
     internal fun publish(state: SessionState) {
         _state.value = state
         onPublish?.invoke(state)
     }
 
-    /**
-     * Suspends until the UI supplies a PIN, or null if the user backs out.
-     * Called from the session's pairing step.
-     */
+    internal fun publishMicSilenced(silenced: Boolean) {
+        _micSilencedByCall.value = silenced
+    }
+
     internal suspend fun requestPin(receiver: AirPlayReceiver): String? {
         val deferred = CompletableDeferred<String?>()
         pendingPin = deferred
@@ -51,10 +59,6 @@ object MirrorController {
         pendingPin?.complete(pin)
     }
 
-    /**
-     * Suspends until the UI supplies the receiver's AirPlay password, or null if
-     * the user backs out. Called when RTSP Digest auth hits a 401.
-     */
     internal suspend fun requestPassword(receiver: AirPlayReceiver): String? {
         val deferred = CompletableDeferred<String?>()
         pendingPassword = deferred
@@ -67,6 +71,7 @@ object MirrorController {
     }
 
     fun clearError() {
+        _micSilencedByCall.value = false
         if (_state.value is SessionState.Failed) _state.value = SessionState.Idle
     }
 }

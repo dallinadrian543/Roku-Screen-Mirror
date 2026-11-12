@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
@@ -34,29 +35,21 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.henry.kite.airplay.discovery.AirPlayReceiver
 import com.henry.kite.airplay.session.SessionState
+import com.henry.kite.airplay.session.activeReceiver
 import com.henry.kite.service.MirrorController
 import com.henry.kite.service.startCast
+import com.henry.kite.settings.MirrorSettings
 import com.henry.kite.ui.components.receiverItems
 import com.henry.kite.ui.theme.KiteTheme
 import kotlinx.coroutines.launch
 
 /**
  * The dialog-style receiver picker the Quick Settings tile opens.
- *
- * A floating [AlertDialog] over whatever the user was doing: pick a receiver,
- * answer the projection consent dialog, done — the main app never comes up.
- * The receiver rows are [receiverItems], the same composable the main screen
- * renders, and casting goes through the same [startCast] path, so the two
- * entry points stay behaviourally identical.
- *
- * Pairing challenges are handed to [MainActivity], which owns the PIN and
- * password dialogs; once audio or video flows the picker closes itself and
- * the cast continues in the foreground service.
  */
 class TilePickerActivity : ComponentActivity() {
 
-    /** The receiver awaiting the projection consent answer. Main thread only. */
     private var pendingReceiver: AirPlayReceiver? = null
+    private var drmCompatEnabled = true
 
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -79,25 +72,21 @@ class TilePickerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestRuntimePermissions()
-        setContent { KiteTheme { PickerDialog() } }
+        setContent {
+            val app = application as KiteApplication
+            val settings by app.settingsRepository.settings.collectAsStateWithLifecycle(
+                initialValue = MirrorSettings(),
+            )
+            drmCompatEnabled = settings.drmCompatibilityMode
+            KiteTheme(themeMode = settings.themeMode) { PickerDialog() }
+        }
     }
 
-    /**
-     * The mic permission is what lets the service claim the microphone
-     * foreground-service type later, so it has to be asked before the cast
-     * starts; from the tile this picker is the only chance.
-     */
     private fun requestRuntimePermissions() {
         val needed = buildList {
             add(Manifest.permission.RECORD_AUDIO)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                add(Manifest.permission.BLUETOOTH_SCAN) // BLE beacon discovery
-            } else {
-                add(Manifest.permission.ACCESS_FINE_LOCATION)
-            }
+            add(Manifest.permission.POST_NOTIFICATIONS)
+            add(Manifest.permission.BLUETOOTH_SCAN)
         }
         val missing = needed.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
@@ -108,7 +97,12 @@ class TilePickerActivity : ComponentActivity() {
     private fun launchConsent(receiver: AirPlayReceiver) {
         pendingReceiver = receiver
         val manager = getSystemService(MediaProjectionManager::class.java)
-        projectionLauncher.launch(manager.createScreenCaptureIntent())
+        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && drmCompatEnabled) {
+            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+        } else {
+            manager.createScreenCaptureIntent()
+        }
+        projectionLauncher.launch(intent)
     }
 
     @Composable
@@ -117,13 +111,10 @@ class TilePickerActivity : ComponentActivity() {
         val receivers by app.discovery.receivers()
             .collectAsStateWithLifecycle(initialValue = emptyList())
         val session by MirrorController.state.collectAsStateWithLifecycle()
-        // Same badges as the main screen; pairing hands off to MainActivity and
-        // closes this dialog, so a one-shot load covers its whole lifetime.
         val pairedIds by produceState(initialValue = emptySet<String>()) {
             value = app.credentialStore.pairedReceiverIds()
         }
 
-        // Hand pairing challenges to the main app; end the dialog once media flows.
         when (val state = session) {
             is SessionState.AwaitingPin, is SessionState.AwaitingPassword -> {
                 LaunchedEffect(state) {
@@ -165,7 +156,9 @@ class TilePickerActivity : ComponentActivity() {
                 color = MaterialTheme.colorScheme.error,
             )
 
-            session !is SessionState.Idle -> BusyRow(stringResource(R.string.tile_pick_connecting))
+            session !is SessionState.Idle -> BusyRow(
+                stringResource(R.string.tile_pick_connecting, session.activeReceiver?.name.orEmpty()),
+            )
 
             receivers.isEmpty() -> BusyRow(stringResource(R.string.discovery_searching))
 

@@ -12,17 +12,26 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.henry.kite"
-        minSdk = 29
-        targetSdk = 36
+        applicationId = "com.dhatech.roku.cast"
+        minSdk = 33
+        targetSdk = 37
         versionCode = 1
         versionName = appVersionName
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
     }
 
     // Release signing is environment-driven so the same code path serves local
     // builds and CI: point KITE_KEYSTORE_PATH at the keystore and supply the
     // passwords, or the release APK stays unsigned.
     signingConfigs {
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         create("release") {
             val keystorePath = System.getenv("KITE_KEYSTORE_PATH")
             if (!keystorePath.isNullOrBlank()) {
@@ -59,6 +68,7 @@ android {
             versionNameSuffix = System.getenv("KITE_VERSION_SUFFIX")?.let { "-$it" }.orEmpty()
         }
         debug {
+            signingConfig = signingConfigs.getByName("debugConfig")
             versionNameSuffix = System.getenv("KITE_VERSION_SUFFIX")?.let { "-$it" }.orEmpty()
         }
     }

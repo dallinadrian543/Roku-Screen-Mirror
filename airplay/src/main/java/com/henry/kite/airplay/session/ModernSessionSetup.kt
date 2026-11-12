@@ -36,7 +36,7 @@ internal class ModernSessionSetup(
         val controlUri: String,
         /** The audio SETUP's URI — RECORD and SET_PARAMETER share it (doubletake). */
         val audioUri: String,
-        val audio: ModernAudioStream,
+        val audio: ModernAudioStream?,
     )
 
     var eventChannel: EventChannel? = null
@@ -54,6 +54,7 @@ internal class ModernSessionSetup(
         val connectionId: Long,
     )
 
+    @Suppress("LongParameterList")
     suspend fun setup(
         pairing: PairingCredentials,
         fairPlay: FairPlayKeys,
@@ -61,6 +62,7 @@ internal class ModernSessionSetup(
         timingPort: Int,
         sharedSecret: ByteArray,
         videoEnabled: Boolean = true,
+        lowLatencyMode: Boolean = false,
     ): SetupResult {
         val control = sendControlSetup(pairing, timingPort)
         configureMediaClock(control.response, control.timing)
@@ -83,12 +85,18 @@ internal class ModernSessionSetup(
         if (videoEnabled) {
             val videoConnectionId = Random.nextLong(1, Long.MAX_VALUE)
             val videoUri = "rtsp://$hostAddress:$port/$videoConnectionId"
+            val latencyMs = if (lowLatencyMode) {
+                ModernSetupRequests.LOW_LATENCY_VIDEO_MS
+            } else {
+                ModernSetupRequests.DEFAULT_MODERN_VIDEO_LATENCY_MS
+            }
             val streamResponse = client.send(
                 ModernSetupRequests.modernVideoSetup(
                     streamConnectionId = videoConnectionId,
                     shk = mixedKey,
                     shiv = fairPlay.eiv,
                     uri = videoUri,
+                    latencyMs = latencyMs,
                 ),
             ).requireSuccess("SETUP (stream)")
 
@@ -103,10 +111,20 @@ internal class ModernSessionSetup(
                 timelineId = clock.ptpTimelineId(),
                 modern = true,
                 clock = clock,
+                lowLatencyMode = lowLatencyMode,
             )
         }
 
-        val audio = announceAudio(client)
+        val audio = if (videoEnabled) {
+            runCatching { announceAudio(client) }
+                .onFailure { Log.w(TAG, "Modern audio SETUP rejected; continuing video-only", it) }
+                .getOrNull()
+        } else {
+            announceAudio(client)
+        }
+        if (audio == null) {
+            audioUri = control.controlUri
+        }
 
         client.sendIdentityHeaders = true
 
@@ -157,8 +175,10 @@ internal class ModernSessionSetup(
         // in captured pcaps, on the audio URI itself. Without this the Mac
         // may start the stream muted.
         repeat(2) {
-            client.send(ModernSetupRequests.modernVolume(audioUri))
-                .requireSuccess("SET_PARAMETER (volume)")
+            runCatching {
+                client.send(ModernSetupRequests.modernVolume(audioUri))
+                    .requireSuccess("SET_PARAMETER (volume)")
+            }.onFailure { Log.w(TAG, "Volume SET_PARAMETER ignored by receiver", it) }
         }
         Log.i(
             TAG,
@@ -253,19 +273,20 @@ internal class ModernSessionSetup(
         return stream["dataPort"].asInt()
     }
 
-    /** Receiver-side audio ports from the audio SETUP response's streamConnections. */
+    /** Receiver-side audio ports from the audio SETUP response's streamConnections or top-level ports. */
     private fun audioPorts(response: RtspResponse): AudioPorts {
         val plist = runCatching { BinaryPlistReader.read(response.body) }.getOrNull()
         val stream = plist?.asDict()?.get("streams").asArray()?.firstOrNull().asDict()
         val connections = stream?.get("streamConnections").asDict()
         val rtp = connections?.get("streamConnectionTypeRTP").asDict()
         val rtcp = connections?.get("streamConnectionTypeRTCP").asDict()
-        return AudioPorts(
-            dataPort = rtp?.get("streamConnectionKeyPort")?.asInt()
-                ?: throw RtspException("Audio SETUP reply carried no RTP dataPort"),
-            controlPort = rtcp?.get("streamConnectionKeyPort")?.asInt()
-                ?: throw RtspException("Audio SETUP reply carried no RTCP controlPort"),
-        )
+        val dataPort = rtp?.get("streamConnectionKeyPort")?.asInt()
+            ?: stream?.get("dataPort")?.asInt()
+            ?: throw RtspException("Audio SETUP reply carried no RTP dataPort")
+        val controlPort = rtcp?.get("streamConnectionKeyPort")?.asInt()
+            ?: stream?.get("controlPort")?.asInt()
+            ?: throw RtspException("Audio SETUP reply carried no RTCP controlPort")
+        return AudioPorts(dataPort = dataPort, controlPort = controlPort)
     }
 
     private class AudioPorts(val dataPort: Int, val controlPort: Int)

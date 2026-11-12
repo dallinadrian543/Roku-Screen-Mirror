@@ -10,13 +10,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.henry.kite.settings.MirrorSettings
 import com.henry.kite.ui.SavedReceiver
 import com.henry.kite.ui.SavedReceiversScreen
 import com.henry.kite.ui.theme.KiteTheme
 import kotlinx.coroutines.launch
 
 /**
- * Settings → Saved receivers: everything with stored pairing material, with a
+ * Settings -> Saved receivers: everything with stored pairing material, with a
  * per-entry forget action. Forgetting erases the credentials, the stored name,
  * and any saved AirPlay password, so the next connection pairs from scratch.
  */
@@ -27,7 +29,11 @@ class SavedReceiversActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         setContent {
-            KiteTheme {
+            val app = application as KiteApplication
+            val settings by app.settingsRepository.settings.collectAsStateWithLifecycle(
+                initialValue = MirrorSettings(),
+            )
+            KiteTheme(themeMode = settings.themeMode) {
                 var receivers by remember { mutableStateOf<List<SavedReceiver>>(emptyList()) }
                 val scope = rememberCoroutineScope()
 
@@ -37,8 +43,7 @@ class SavedReceiversActivity : ComponentActivity() {
                     receivers = receivers,
                     onForget = { row ->
                         scope.launch {
-                            (application as KiteApplication).credentialStore
-                                .forgetReceiver(row.stableId)
+                            app.credentialStore.forgetReceiver(row.stableId)
                             receivers = loadReceivers()
                         }
                     },

@@ -3,6 +3,7 @@ package com.henry.kite
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
@@ -14,8 +15,10 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,9 +32,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.henry.kite.airplay.discovery.AirPlayReceiver
 import com.henry.kite.airplay.session.SessionState
+import com.henry.kite.service.MirrorController
 import com.henry.kite.service.MirrorService
 import com.henry.kite.service.startCast
+import com.henry.kite.ui.DiscoveryActions
 import com.henry.kite.ui.DiscoveryScreen
+import com.henry.kite.ui.DiscoveryScreenState
 import com.henry.kite.ui.components.PasswordDialog
 import com.henry.kite.ui.components.PinDialog
 import com.henry.kite.ui.theme.KiteTheme
@@ -74,8 +80,6 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { /* Discovery and notifications degrade rather than fail; no action needed. */ }
 
-    // One-shot wiring of the whole screen: permission launchers, discovery,
-    // dialogs and the cast/pairing state machine all attach here.
     @Suppress("LongMethod")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -83,15 +87,18 @@ class MainActivity : ComponentActivity() {
         requestRuntimePermissions()
 
         setContent {
+            val settings by viewModel.settings.collectAsStateWithLifecycle()
             @OptIn(ExperimentalMaterial3Api::class)
-            KiteTheme {
+            KiteTheme(themeMode = settings.themeMode) {
                 val uiState by viewModel.uiState.collectAsStateWithLifecycle()
                 val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
+                val audioRoutingState by viewModel.audioRoutingState.collectAsStateWithLifecycle()
+                val micSilencedByCall by viewModel.micSilencedByCall.collectAsStateWithLifecycle()
+                val manualConnectBusy by viewModel.manualConnectBusy.collectAsStateWithLifecycle()
+                val manualConnectError by viewModel.manualConnectError.collectAsStateWithLifecycle()
                 val pinRequest by viewModel.pinRequest.collectAsStateWithLifecycle()
                 val passwordRequest by viewModel.passwordRequest.collectAsStateWithLifecycle()
 
-                // Settings → Saved receivers can forget a receiver while this
-                // screen sits in the back stack; refresh the badges on return.
                 LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
                     viewModel.refreshPairedReceivers()
                 }
@@ -99,69 +106,68 @@ class MainActivity : ComponentActivity() {
                 var audioOnlyTarget by remember { mutableStateOf<AirPlayReceiver?>(null) }
 
                 DiscoveryScreen(
-                    uiState = uiState,
-                    sessionState = sessionState,
-                    onStartMirroring = ::requestProjection,
-                    onReceiverLongPress = { audioOnlyTarget = it },
-                    onStopMirroring = {
-                        MirrorService.stop(this)
-                        viewModel.onSessionEnded()
-                    },
-                    onOpenSettings = {
-                        startActivity(Intent(this, SettingsActivity::class.java))
-                    },
-                )
-
-                // Long-press presents the choices instead of committing to one:
-                // screen with sound, screen without sound, or just the sound.
-                // An AlertDialog, same as every other dialog in this app — its
-                // surface color matches by construction.
-                audioOnlyTarget?.let { receiver ->
-                    androidx.compose.material3.AlertDialog(
-                        onDismissRequest = { audioOnlyTarget = null },
-                        title = { Text(receiver.name) },
-                        text = {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                androidx.compose.material3.TextButton(
-                                    onClick = {
-                                        audioOnlyTarget = null
-                                        requestProjection(receiver)
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Text(
-                                        stringResource(R.string.receiver_action_mirror),
-                                        modifier = Modifier.fillMaxWidth(),
-                                    )
-                                }
-                                androidx.compose.material3.TextButton(
-                                    onClick = {
-                                        audioOnlyTarget = null
-                                        requestProjection(receiver, videoOnly = true)
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Text(
-                                        stringResource(R.string.receiver_action_video_only),
-                                        modifier = Modifier.fillMaxWidth(),
-                                    )
-                                }
-                                androidx.compose.material3.TextButton(
-                                    onClick = {
-                                        audioOnlyTarget = null
-                                        requestProjection(receiver, audioOnly = true)
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Text(
-                                        stringResource(R.string.receiver_action_audio_only),
-                                        modifier = Modifier.fillMaxWidth(),
-                                    )
-                                }
+                    state = DiscoveryScreenState(
+                        uiState = uiState,
+                        sessionState = sessionState,
+                        settings = settings,
+                        audioRoutingState = audioRoutingState,
+                        micSilencedByCall = micSilencedByCall,
+                        manualConnectBusy = manualConnectBusy,
+                        manualConnectError = manualConnectError,
+                    ),
+                    actions = DiscoveryActions(
+                        onStartMirroring = ::requestProjection,
+                        onReceiverLongPress = { audioOnlyTarget = it },
+                        onStopMirroring = {
+                            MirrorService.stop(this)
+                            viewModel.onSessionEnded()
+                        },
+                        onRetry = { receiver ->
+                            val last = MirrorController.lastCastTarget
+                            requestProjection(
+                                receiver = receiver,
+                                audioOnly = last?.audioOnly == true,
+                                videoOnly = last?.videoOnly == true,
+                            )
+                        },
+                        onDismissError = viewModel::clearError,
+                        onRefreshDiscovery = viewModel::refreshDiscovery,
+                        onConnectManualIp = { host, port, onDone ->
+                            viewModel.addManualReceiver(host, port) { receiver ->
+                                onDone()
+                                requestProjection(receiver)
                             }
                         },
-                        confirmButton = {},
-                        dismissButton = {},
+                        onClearManualError = viewModel::clearManualError,
+                        onToggleVideoCallMode = viewModel::toggleVideoCallMode,
+                        onToggleMixMic = viewModel::setMixMicrophoneInCalls,
+                        onSelectMicDevice = viewModel::selectMicDevice,
+                        onSelectOutputDevice = viewModel::selectOutputDevice,
+                        onOpenAndroidSoundSettings = viewModel::openAndroidSoundSettings,
+                        onOpenBluetoothSettings = viewModel::openBluetoothSettings,
+                        onCycleThemeMode = viewModel::cycleThemeMode,
+                        onOpenSettings = {
+                            startActivity(Intent(this, SettingsActivity::class.java))
+                        },
+                    ),
+                )
+
+                audioOnlyTarget?.let { receiver ->
+                    ReceiverActionDialog(
+                        receiver = receiver,
+                        onDismiss = { audioOnlyTarget = null },
+                        onMirror = {
+                            audioOnlyTarget = null
+                            requestProjection(receiver)
+                        },
+                        onVideoOnly = {
+                            audioOnlyTarget = null
+                            requestProjection(receiver, videoOnly = true)
+                        },
+                        onAudioOnly = {
+                            audioOnlyTarget = null
+                            requestProjection(receiver, audioOnly = true)
+                        },
                     )
                 }
 
@@ -184,43 +190,62 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Asks for screen capture consent. Android requires a fresh grant every time;
-     * the token cannot be cached across sessions.
-     */
+    @androidx.compose.runtime.Composable
+    private fun ReceiverActionDialog(
+        receiver: AirPlayReceiver,
+        onDismiss: () -> Unit,
+        onMirror: () -> Unit,
+        onVideoOnly: () -> Unit,
+        onAudioOnly: () -> Unit,
+    ) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text(receiver.name) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = onMirror, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.receiver_action_mirror), modifier = Modifier.fillMaxWidth())
+                    }
+                    TextButton(onClick = onVideoOnly, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.receiver_action_video_only), modifier = Modifier.fillMaxWidth())
+                    }
+                    TextButton(onClick = onAudioOnly, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.receiver_action_audio_only), modifier = Modifier.fillMaxWidth())
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {},
+        )
+    }
+
     private fun requestProjection(receiver: AirPlayReceiver, audioOnly: Boolean = false, videoOnly: Boolean = false) {
         if (viewModel.sessionState.value !is SessionState.Idle &&
             viewModel.sessionState.value !is SessionState.Failed
         ) {
-            return // A session is already running.
+            return
         }
         viewModel.pendingReceiver = receiver
         pendingAudioOnly = audioOnly
         pendingVideoOnly = videoOnly
         val manager = getSystemService(MediaProjectionManager::class.java)
-        projectionLauncher.launch(manager.createScreenCaptureIntent())
+        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+            viewModel.settings.value.drmCompatibilityMode
+        ) {
+            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+        } else {
+            manager.createScreenCaptureIntent()
+        }
+        projectionLauncher.launch(intent)
     }
 
     private fun requestRuntimePermissions() {
         val needed = buildList {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
-                // Without this, mDNS returns nothing on Android 13+.
-                add(Manifest.permission.NEARBY_WIFI_DEVICES)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                // BLE beacon discovery (mDNS-blocked networks).
-                add(Manifest.permission.BLUETOOTH_SCAN)
-            } else {
-                // Pre-31 BLE scan results are gated on location.
-                add(Manifest.permission.ACCESS_FINE_LOCATION)
-            }
-            // Playback capture rides on the projection grant but is still an
-            // AudioRecord, so without this the audio stream stays silent.
+            add(Manifest.permission.POST_NOTIFICATIONS)
+            add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            add(Manifest.permission.BLUETOOTH_SCAN)
             add(Manifest.permission.RECORD_AUDIO)
         }
-        if (needed.isNotEmpty()) {
-            permissionLauncher.launch(needed.toTypedArray())
-        }
+        permissionLauncher.launch(needed.toTypedArray())
     }
 }
