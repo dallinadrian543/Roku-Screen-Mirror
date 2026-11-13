@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.henry.kite.capture"
+    namespace = "com.dhatech.roku.capture"
     compileSdk = 37
 
     defaultConfig {

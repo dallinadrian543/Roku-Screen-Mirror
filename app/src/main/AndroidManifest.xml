@@ -53,7 +53,7 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
-        android:name=".KiteApplication"
+        android:name="com.dhatech.roku.KiteApplication"
         android:allowBackup="false"
         android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"
@@ -72,14 +72,14 @@
           foreground behind the translucent dialog.
         -->
         <activity
-            android:name=".TilePickerActivity"
+            android:name="com.dhatech.roku.TilePickerActivity"
             android:excludeFromRecents="true"
             android:exported="false"
             android:taskAffinity=""
             android:theme="@style/Theme.Kite.TilePicker" />
 
         <activity
-            android:name=".MainActivity"
+            android:name="com.dhatech.roku.MainActivity"
             android:exported="true"
             android:theme="@style/Theme.Kite">
             <intent-filter>
@@ -89,15 +89,15 @@
         </activity>
 
         <activity
-            android:name=".SettingsActivity"
+            android:name="com.dhatech.roku.SettingsActivity"
             android:exported="false"
-            android:parentActivityName=".MainActivity"
+            android:parentActivityName="com.dhatech.roku.MainActivity"
             android:theme="@style/Theme.Kite" />
 
         <activity
-            android:name=".SavedReceiversActivity"
+            android:name="com.dhatech.roku.SavedReceiversActivity"
             android:exported="false"
-            android:parentActivityName=".SettingsActivity"
+            android:parentActivityName="com.dhatech.roku.SettingsActivity"
             android:theme="@style/Theme.Kite" />
 
         <!--
@@ -106,13 +106,13 @@
           the system throws.
         -->
         <service
-            android:name=".service.MirrorService"
+            android:name="com.dhatech.roku.service.MirrorService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection|microphone" />
 
         <!-- Quick Settings tile: "Screen cast" in the notification shade. -->
         <service
-            android:name=".service.KiteTileService"
+            android:name="com.dhatech.roku.service.KiteTileService"
             android:exported="true"
             android:icon="@drawable/ic_tile_cast"
             android:label="@string/tile_label"

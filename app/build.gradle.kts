@@ -8,7 +8,7 @@ plugins {
 val appVersionName = "1.0.0"
 
 android {
-    namespace = "com.henry.kite"
+    namespace = "com.dhatech.roku.cast"
     compileSdk = 37
 
     defaultConfig {
@@ -51,6 +51,7 @@ android {
                 signingConfig = it
             }
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -63,6 +64,7 @@ android {
         create("canary") {
             initWith(getByName("release"))
             isMinifyEnabled = false
+            isShrinkResources = false
             isDebuggable = true
             matchingFallbacks += listOf("release")
             versionNameSuffix = System.getenv("KITE_VERSION_SUFFIX")?.let { "-$it" }.orEmpty()
@@ -75,6 +77,19 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    bundle {
+        abi {
+            enableSplit = true
+        }
+        density {
+            enableSplit = true
+        }
+        language {
+            // Keep all 11 locales bundled so Android 13+ per-app language switching works offline.
+            enableSplit = false
+        }
     }
 
     compileOptions {
@@ -115,6 +130,7 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
+    debugImplementation(libs.leakcanary.android)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.ext.junit)
