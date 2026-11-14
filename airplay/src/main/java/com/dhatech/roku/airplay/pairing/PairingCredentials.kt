@@ -87,4 +87,13 @@ class SessionKeys(
     override fun toString(): String = "SessionKeys(<redacted>)"
 }
 
-class PairingException(message: String, val tlvError: TlvError? = null) : Exception(message)
+/** Stage of HAP pairing where [PairingException] occurred. */
+enum class PairingStage {
+    BEGIN,
+    SRP_PROOF,
+    IDENTITY_EXCHANGE,
+    VERIFY,
+}
+
+class PairingException(message: String, val tlvError: TlvError? = null, val stage: PairingStage? = null) :
+    Exception(message)

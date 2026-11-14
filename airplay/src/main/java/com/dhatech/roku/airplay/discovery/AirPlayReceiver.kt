@@ -86,7 +86,7 @@ data class AirPlayReceiver(
      */
     val requiresPassword: Boolean
         get() = txtRecords["pw"]?.equals("true", ignoreCase = true)
-            ?: (txtRecords["sf"]?.toIntOrNull(16)?.and(SF_PASSWORD_FLAG) != 0)
+            ?: ((parseStatusFlags(txtRecords["sf"] ?: txtRecords["flags"])?.and(SF_PASSWORD_FLAG) ?: 0L) != 0L)
 
     /** `cn` TXT key: advertised audio codecs. 0 = PCM/L16, 1 = ALAC, 2 = AAC-LC. */
     val supportsPcmAudio: Boolean
@@ -125,5 +125,12 @@ enum class PairingPath {
     NONE,
 }
 
-private const val SF_PASSWORD_FLAG = 0x4
+internal fun parseStatusFlags(raw: String?): Long? {
+    val normalized = raw?.trim()?.removePrefix("0x")?.removePrefix("0X")?.takeIf { it.isNotEmpty() }
+        ?: return null
+    return normalized.toLongOrNull(HEX_RADIX)
+}
+
+private const val SF_PASSWORD_FLAG = 0x4L
+private const val HEX_RADIX = 16
 private const val CODEC_PCM = "0"

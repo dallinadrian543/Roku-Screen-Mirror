@@ -6,8 +6,13 @@ import com.dhatech.roku.airplay.crypto.HkdfSha512
 import com.dhatech.roku.airplay.discovery.AirPlayReceiver
 import com.dhatech.roku.airplay.pairing.PairSetup
 import com.dhatech.roku.airplay.pairing.PairVerify
+import com.dhatech.roku.airplay.pairing.PairingCredentials
 import com.dhatech.roku.airplay.pairing.PairingException
+import com.dhatech.roku.airplay.pairing.PairingProtocol
+import com.dhatech.roku.airplay.pairing.PairingStage
+import com.dhatech.roku.airplay.pairing.PairingTransport
 import com.dhatech.roku.airplay.pairing.SessionKeys
+import com.dhatech.roku.airplay.pairing.TlvError
 import com.dhatech.roku.airplay.plist.BinaryPlistReader
 import com.dhatech.roku.airplay.plist.BinaryPlistWriter
 import com.dhatech.roku.airplay.plist.PlistValue
@@ -132,39 +137,144 @@ class AirPlay2Session(
      * everything else goes straight to code pairing, whose credentials persist.
      */
     private suspend fun authenticate(pinProvider: suspend () -> String?): SessionKeys {
-        val stored = runCatching { credentialStore.load(receiver.stableId) }.getOrNull()
-        if (stored != null) {
-            Log.i(TAG, "Pair-verify with stored credentials for ${receiver.name}")
-            activeCredentials = stored
-            return PairVerify(client, stored, stored.protocol).verify()
-        }
-
-        if (receiver.features.supportsSystemPairing || receiver.features.supportsCoreUtilsPairingAndEncryption) {
-            TransientPairSetup(client).perform()?.let { result ->
+        val verified = tryVerifyStored()
+        return if (verified != null) {
+            verified
+        } else {
+            val systemPairing = receiver.features.supportsSystemPairing ||
+                receiver.features.supportsCoreUtilsPairingAndEncryption
+            val transientResult = if (systemPairing) TransientPairSetup(client).perform() else null
+            if (transientResult != null) {
                 Log.i(TAG, "Transient pairing with ${receiver.name} succeeded")
-                runCatching { credentialStore.save(receiver.stableId, result.credentials, receiver.name) }
-                activeCredentials = result.credentials
-                return result.keys
+                runCatching { credentialStore.save(receiver.stableId, transientResult.credentials, receiver.name) }
+                activeCredentials = transientResult.credentials
+                transientResult.keys
+            } else {
+                if (systemPairing) {
+                    // Failed transient poisons the receiver's pairing state; restart on a clean connection.
+                    Log.i(TAG, "Transient pairing unavailable; reconnecting for code pairing")
+                    runCatching { client.close() }
+                    client.connect()
+                }
+                pairWithPin(pinProvider)
             }
-            // Failed transient poisons the receiver's pairing state; restart
-            // on a clean connection, pair-pin-start first — that request is
-            // what makes the receiver display its code.
-            Log.i(TAG, "Transient pairing unavailable; reconnecting for code pairing")
+        }
+    }
+
+    private suspend fun pairWithPin(pinProvider: suspend () -> String?): SessionKeys {
+        val initialProtocol = if (receiver.features.usesModernPairing || receiver.isRoku) {
+            PairingProtocol.HAP_SCREEN_CAPTURE
+        } else {
+            PairingProtocol.HAP_LEGACY
+        }
+        val (credentials, keys) = codePair(initialProtocol, pinProvider)
+        activeCredentials = credentials
+        runCatching { credentialStore.save(receiver.stableId, credentials, receiver.name) }
+        Log.i(TAG, "Paired with ${receiver.name} (${credentials.protocol}); credentials stored")
+        return keys
+    }
+
+    private suspend fun tryVerifyStored(): SessionKeys? {
+        val stored = runCatching { credentialStore.load(receiver.stableId) }.getOrNull() ?: return null
+        Log.i(TAG, "Pair-verify with stored credentials for ${receiver.name}")
+        return try {
+            activeCredentials = stored
+            PairVerify(client, stored, stored.protocol).verify()
+        } catch (e: Exception) {
+            if (!isRetryableError(e)) throw e
+            Log.w(TAG, "Stored credentials rejected (${e.message}); forgetting and re-pairing")
+            runCatching { credentialStore.forget(receiver.stableId) }
+            activeCredentials = null
             runCatching { client.close() }
             client.connect()
-            runCatching { client.send(RtspRequest("POST", "/pair-pin-start")) }
+            null
+        }
+    }
+
+    private suspend fun codePair(
+        initialProtocol: PairingProtocol,
+        pinProvider: suspend () -> String?,
+    ): Pair<PairingCredentials, SessionKeys> {
+        val (protocol, setup) = startCodePairWithFallback(initialProtocol)
+        val pin = (pinProvider() ?: throw PairingException("Pairing cancelled before the PIN was entered")).trim()
+        val credentials = completeCodePairWithFallback(protocol, setup, pin)
+        val keys = try {
+            PairVerify(client, credentials, credentials.protocol).verify()
+        } catch (e: Exception) {
+            val throttled = e is PairingException &&
+                e.tlvError in setOf(TlvError.BACKOFF, TlvError.MAX_TRIES, TlvError.MAX_PEERS)
+            if (throttled || (e !is PairingException && e !is RtspException)) throw e
+            runCatching { client.close() }
+            client.connect()
+            PairVerify(client, credentials, credentials.protocol).verify()
+        }
+        return credentials to keys
+    }
+
+    private suspend fun startCodePairWithFallback(initialProtocol: PairingProtocol): Pair<PairingProtocol, PairSetup> =
+        try {
+            initialProtocol to startCodePairAttempt(initialProtocol)
+        } catch (e: Exception) {
+            val alt = alternateCodeProtocol(initialProtocol)
+            if (!isRetryableError(e)) throw e
+            Log.w(TAG, "Code pair begin failed on $initialProtocol (${e.message}); trying $alt")
+            runCatching { client.close() }
+            client.connect()
+            alt to startCodePairAttempt(alt)
         }
 
-        // Code is on the receiver's screen already; collect it, then exchange.
-        val pin = pinProvider()
-            ?: throw PairingException("Pairing cancelled before the PIN was entered")
-        val setup = PairSetup(client)
-        setup.begin()
-        val credentials = setup.complete(pin.trim())
-        val keys = PairVerify(client, credentials, credentials.protocol).verify()
-        runCatching { credentialStore.save(receiver.stableId, credentials, receiver.name) }
-        Log.i(TAG, "Paired with ${receiver.name}; credentials stored")
-        return keys
+    private suspend fun startCodePairAttempt(protocol: PairingProtocol): PairSetup {
+        val hkp = protocol.hkpVersion ?: PairingTransport.HKP_LEGACY
+        val pairingClientId = UUID.randomUUID().toString()
+        runCatching {
+            client.send(
+                RtspRequest(
+                    method = "POST",
+                    uri = "/pair-pin-start",
+                    headers = buildMap {
+                        put("X-Apple-HKP", hkp)
+                        put("X-Apple-Client-ID", pairingClientId)
+                        if (hkp != PairingTransport.HKP_LEGACY) put("X-Apple-SupportedPINLengths", "4")
+                    },
+                ),
+            )
+        }
+        return PairSetup(
+            transport = client,
+            clientId = pairingClientId,
+            hkpVersion = hkp,
+            screenCaptureAcl = protocol == PairingProtocol.HAP_SCREEN_CAPTURE,
+        ).also { it.begin() }
+    }
+
+    private suspend fun completeCodePairWithFallback(
+        protocol: PairingProtocol,
+        setup: PairSetup,
+        pin: String,
+    ): PairingCredentials = try {
+        setup.complete(pin)
+    } catch (e: Exception) {
+        val shouldRetry = (e is PairingException && e.stage == PairingStage.IDENTITY_EXCHANGE) ||
+            e is RtspException
+        if (!shouldRetry) throw e
+        val alt = alternateCodeProtocol(protocol)
+        Log.w(TAG, "Code pair complete failed on $protocol (${e.message}); trying $alt")
+        runCatching { client.close() }
+        client.connect()
+        startCodePairAttempt(alt).complete(pin)
+    }
+
+    private fun alternateCodeProtocol(protocol: PairingProtocol): PairingProtocol =
+        if (protocol == PairingProtocol.HAP_SCREEN_CAPTURE) {
+            PairingProtocol.HAP_LEGACY
+        } else {
+            PairingProtocol.HAP_SCREEN_CAPTURE
+        }
+
+    private fun isRetryableError(e: Exception): Boolean {
+        val throttled = e is PairingException &&
+            e.tlvError in setOf(TlvError.BACKOFF, TlvError.MAX_TRIES, TlvError.MAX_PEERS)
+        return !throttled && (e is PairingException || e is RtspException)
     }
 
     /**

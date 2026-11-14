@@ -3,6 +3,7 @@ package com.dhatech.roku.airplay.discovery
 import android.util.Log
 import com.dhatech.roku.airplay.plist.BinaryPlistReader
 import com.dhatech.roku.airplay.plist.PlistValue
+import com.dhatech.roku.airplay.plist.asBool
 import com.dhatech.roku.airplay.plist.asData
 import com.dhatech.roku.airplay.plist.asDict
 import com.dhatech.roku.airplay.plist.asLong
@@ -325,6 +326,8 @@ object EndpointProber {
             osInfo?.let { put("osinfo", it) }
             deviceId?.let { put("deviceid", it) }
             srcVers?.let { put("srcvers", it) }
+            dict["pw"]?.asBool()?.let { put("pw", it.toString()) }
+            (dict["statusFlags"]?.asLong() ?: dict["flags"]?.asLong())?.let { put("sf", "0x%x".format(it)) }
         }
     }
 

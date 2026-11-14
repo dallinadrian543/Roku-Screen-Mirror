@@ -1,6 +1,7 @@
 package com.dhatech.roku.airplay.session
 
 import com.dhatech.roku.airplay.pairing.PairingException
+import com.dhatech.roku.airplay.pairing.PairingStage
 import com.dhatech.roku.airplay.rtsp.DigestRejectedException
 import com.dhatech.roku.airplay.rtsp.RtspException
 import java.io.EOFException
@@ -54,10 +55,17 @@ object ErrorGuidance {
             isTransient = false,
         )
 
-        isBadPinError(raw) -> ErrorAdvice(
+        isBadPinError(cause, raw) -> ErrorAdvice(
             title = "Incorrect pairing code",
             detail = "The PIN or pairing proof was rejected by the receiver.",
             hint = "Verify the 4-digit code currently shown on your TV and try again.",
+            isTransient = false,
+        )
+
+        cause is PairingException && cause.stage == PairingStage.IDENTITY_EXCHANGE -> ErrorAdvice(
+            title = "Pairing rejected after PIN",
+            detail = "The TV verified the code, then declined key exchange ($raw).",
+            hint = "Toggle Apple AirPlay off and back on in Roku settings, then tap Retry.",
             isTransient = false,
         )
 
@@ -65,6 +73,13 @@ object ErrorGuidance {
             title = "Pairing expired",
             detail = "Saved pairing credentials were rejected by the receiver.",
             hint = "Saved pairing was cleared automatically. Tap Retry to pair again.",
+            isTransient = false,
+        )
+
+        cause is PairingException && cause.stage == PairingStage.VERIFY -> ErrorAdvice(
+            title = "Pairing verification failed",
+            detail = "The receiver rejected session verification ($raw).",
+            hint = "Tap Retry to clear saved credentials and pair again.",
             isTransient = false,
         )
 
@@ -129,9 +144,16 @@ object ErrorGuidance {
     private fun isBackoffError(msg: String): Boolean =
         msg.contains("backoff", ignoreCase = true) || msg.contains("throttl", ignoreCase = true)
 
-    private fun isBadPinError(msg: String): Boolean = msg.contains("SRP proof", ignoreCase = true) ||
-        msg.contains("AUTHENTICATION", ignoreCase = true) ||
-        msg.contains("check the PIN", ignoreCase = true)
+    private fun isBadPinError(cause: Throwable?, msg: String): Boolean {
+        if (cause is PairingException &&
+            (cause.stage == PairingStage.IDENTITY_EXCHANGE || cause.stage == PairingStage.VERIFY)
+        ) {
+            return false
+        }
+        return msg.contains("SRP proof", ignoreCase = true) ||
+            msg.contains("AUTHENTICATION", ignoreCase = true) ||
+            msg.contains("check the PIN", ignoreCase = true)
+    }
 
     private const val MAX_UNWRAP_DEPTH = 6
     private const val HTTP_FORBIDDEN = 403

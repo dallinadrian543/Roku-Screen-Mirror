@@ -61,11 +61,11 @@ class PairSetup(
             .build()
 
         Log.i(TAG, "[PAIR] pair-setup M1 -> (hkp=$hkpVersion, acl=$screenCaptureAcl)")
-        val m2 = exchange(m1, expectedState = STATE_M2)
+        val m2 = exchange(m1, expectedState = STATE_M2, stage = PairingStage.BEGIN)
         val saltValue = m2[TlvType.SALT]
-            ?: throw PairingException("pair-setup M2 is missing the salt")
+            ?: throw PairingException("pair-setup M2 is missing the salt", stage = PairingStage.BEGIN)
         val serverKeyValue = m2[TlvType.PUBLIC_KEY]
-            ?: throw PairingException("pair-setup M2 is missing the server public key")
+            ?: throw PairingException("pair-setup M2 is missing the server public key", stage = PairingStage.BEGIN)
         salt = saltValue
         serverPublicKey = serverKeyValue
         Log.i(
@@ -89,13 +89,16 @@ class PairSetup(
             .put(TlvType.PROOF, proof)
             .build()
 
-        val m4 = exchange(m3, expectedState = STATE_M4)
+        val m4 = exchange(m3, expectedState = STATE_M4, stage = PairingStage.SRP_PROOF)
         val serverProof = m4[TlvType.PROOF]
-            ?: throw PairingException("pair-setup M4 is missing the server proof")
+            ?: throw PairingException("pair-setup M4 is missing the server proof", stage = PairingStage.SRP_PROOF)
         if (!srp.verifyServerProof(serverProof)) {
             // Either the PIN was wrong or something is impersonating the receiver.
             Log.w(TAG, "[PAIR] pair-setup M4 SRP proof FAILED (wrong PIN or impersonation)")
-            throw PairingException("Receiver SRP proof did not verify; check the PIN")
+            throw PairingException(
+                "Receiver SRP proof did not verify; check the PIN",
+                stage = PairingStage.SRP_PROOF,
+            )
         }
         Log.i(TAG, "[PAIR] pair-setup M3/M4 <- SRP proof verified")
 
@@ -122,7 +125,7 @@ class PairSetup(
             .put(TlvType.ENCRYPTED_DATA, sealed)
             .build()
 
-        val m6 = exchange(m5, expectedState = STATE_M6)
+        val m6 = exchange(m5, expectedState = STATE_M6, stage = PairingStage.IDENTITY_EXCHANGE)
         Log.i(TAG, "[PAIR] pair-setup M5/M6 <- receiver identity received")
         return readReceiverIdentity(m6, encryptionKey)
     }
@@ -130,7 +133,10 @@ class PairSetup(
     /** Opens M6 and checks the receiver's self-signature before trusting its key. */
     private fun readReceiverIdentity(m6: Tlv8, encryptionKey: ByteArray): PairingCredentials {
         val sealed = m6[TlvType.ENCRYPTED_DATA]
-            ?: throw PairingException("pair-setup M6 is missing the encrypted payload")
+            ?: throw PairingException(
+                "pair-setup M6 is missing the encrypted payload",
+                stage = PairingStage.IDENTITY_EXCHANGE,
+            )
 
         val opened = runCatching {
             ChaChaPolyCipher.open(
@@ -138,20 +144,37 @@ class PairSetup(
                 nonce = ChaChaPolyCipher.nonce(NONCE_M6),
                 ciphertext = sealed,
             )
-        }.getOrElse { throw PairingException("pair-setup M6 failed to decrypt: ${it.message}") }
+        }.getOrElse {
+            throw PairingException(
+                "pair-setup M6 failed to decrypt: ${it.message}",
+                stage = PairingStage.IDENTITY_EXCHANGE,
+            )
+        }
 
         val inner = Tlv8.decode(opened)
         val receiverId = inner[TlvType.IDENTIFIER]?.decodeToString()
-            ?: throw PairingException("pair-setup M6 is missing the receiver identifier")
+            ?: throw PairingException(
+                "pair-setup M6 is missing the receiver identifier",
+                stage = PairingStage.IDENTITY_EXCHANGE,
+            )
         val receiverPublicKey = inner[TlvType.PUBLIC_KEY]
-            ?: throw PairingException("pair-setup M6 is missing the receiver public key")
+            ?: throw PairingException(
+                "pair-setup M6 is missing the receiver public key",
+                stage = PairingStage.IDENTITY_EXCHANGE,
+            )
         val receiverSignature = inner[TlvType.SIGNATURE]
-            ?: throw PairingException("pair-setup M6 is missing the receiver signature")
+            ?: throw PairingException(
+                "pair-setup M6 is missing the receiver signature",
+                stage = PairingStage.IDENTITY_EXCHANGE,
+            )
 
         val verifyKey = HkdfSha512.derive(srp.sharedSecret, SALT_ACCESSORY, INFO_ACCESSORY)
         val signedData = verifyKey + receiverId.toByteArray() + receiverPublicKey
         if (!Ed25519Verify.verify(receiverPublicKey, signedData, receiverSignature)) {
-            throw PairingException("Receiver signature did not verify in pair-setup M6")
+            throw PairingException(
+                "Receiver signature did not verify in pair-setup M6",
+                stage = PairingStage.IDENTITY_EXCHANGE,
+            )
         }
 
         return PairingCredentials(
@@ -166,7 +189,7 @@ class PairSetup(
         )
     }
 
-    private suspend fun exchange(request: Tlv8, expectedState: Int): Tlv8 {
+    private suspend fun exchange(request: Tlv8, expectedState: Int, stage: PairingStage): Tlv8 {
         val response = Tlv8.decode(
             transport.postTlv(PairingTransport.PAIR_SETUP, request.encode(), pairingHeaders),
         )
@@ -177,22 +200,25 @@ class PairSetup(
             // the actionable message instead of a misleading code.
             val throttled = error == TlvError.BACKOFF ||
                 (error == TlvError.AUTHENTICATION && expectedState == STATE_M2)
-            throw PairingException(
-                if (throttled) {
+            val detail = when {
+                throttled ->
                     "Receiver is throttling pairing attempts; toggle its AirPlay receiver or wait before retrying"
-                } else {
+
+                stage == PairingStage.IDENTITY_EXCHANGE ->
+                    "Receiver rejected pair-setup identity (M5/M6): $error"
+
+                else ->
                     "Receiver rejected pair-setup: $error"
-                },
-                error,
-            )
+            }
+            throw PairingException(detail, error, stage)
         }
-        return validated(response, expectedState)
+        return validated(response, expectedState, stage)
     }
 
-    private fun validated(response: Tlv8, expectedState: Int): Tlv8 {
+    private fun validated(response: Tlv8, expectedState: Int, stage: PairingStage): Tlv8 {
         val state = response.state
         if (state != expectedState) {
-            throw PairingException("Expected pair-setup state $expectedState but got $state")
+            throw PairingException("Expected pair-setup state $expectedState but got $state", stage = stage)
         }
         return response
     }

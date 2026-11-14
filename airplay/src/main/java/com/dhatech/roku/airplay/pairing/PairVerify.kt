@@ -53,9 +53,9 @@ class PairVerify(
 
         val m2 = exchange(m1, expectedState = STATE_M2)
         val peerEphemeralPublic = m2[TlvType.PUBLIC_KEY]
-            ?: throw PairingException("pair-verify M2 is missing the ephemeral public key")
+            ?: throw PairingException("pair-verify M2 is missing the ephemeral public key", stage = PairingStage.VERIFY)
         val sealedPeerId = m2[TlvType.ENCRYPTED_DATA]
-            ?: throw PairingException("pair-verify M2 is missing the encrypted payload")
+            ?: throw PairingException("pair-verify M2 is missing the encrypted payload", stage = PairingStage.VERIFY)
         Log.i(TAG, "[PAIR] pair-verify V1/V2 <- receiver ephemeral key ${peerEphemeralPublic.size}B")
 
         val sharedSecret = ephemeral.agree(peerEphemeralPublic)
@@ -108,14 +108,14 @@ class PairVerify(
         }.getOrElse {
             // Wrong key means our stored credentials no longer match this receiver,
             // usually because it was factory reset or unpaired.
-            throw PairingException("pair-verify M2 failed to decrypt; re-pairing required")
+            throw PairingException("pair-verify M2 failed to decrypt; re-pairing required", stage = PairingStage.VERIFY)
         }
 
         val inner = Tlv8.decode(opened)
         val peerId = inner[TlvType.IDENTIFIER]?.decodeToString()
-            ?: throw PairingException("pair-verify M2 is missing the receiver identifier")
+            ?: throw PairingException("pair-verify M2 is missing the receiver identifier", stage = PairingStage.VERIFY)
         val peerSignature = inner[TlvType.SIGNATURE]
-            ?: throw PairingException("pair-verify M2 is missing the receiver signature")
+            ?: throw PairingException("pair-verify M2 is missing the receiver signature", stage = PairingStage.VERIFY)
 
         // Without a stored receiver key (transient/raw pairing) the M2 decrypt
         // already proved the peer holds the session key; skip the identity check.
@@ -124,12 +124,13 @@ class PairVerify(
         if (peerId != credentials.receiverId) {
             throw PairingException(
                 "Receiver identity changed: stored ${credentials.receiverId}, got $peerId",
+                stage = PairingStage.VERIFY,
             )
         }
 
         val signedData = peerEphemeralPublic + peerId.toByteArray() + ourEphemeralPublic
         if (!Ed25519Verify.verify(credentials.receiverPublicKey, signedData, peerSignature)) {
-            throw PairingException("Receiver signature did not verify in pair-verify M2")
+            throw PairingException("Receiver signature did not verify in pair-verify M2", stage = PairingStage.VERIFY)
         }
     }
 
@@ -138,11 +139,14 @@ class PairVerify(
             transport.postTlv(PairingTransport.PAIR_VERIFY, request.encode(), pairingHeaders),
         )
         response.error?.let { error ->
-            throw PairingException("Receiver rejected pair-verify: $error", error)
+            throw PairingException("Receiver rejected pair-verify: $error", error, PairingStage.VERIFY)
         }
         val state = response.state
         if (state != expectedState) {
-            throw PairingException("Expected pair-verify state $expectedState but got $state")
+            throw PairingException(
+                "Expected pair-verify state $expectedState but got $state",
+                stage = PairingStage.VERIFY,
+            )
         }
         return response
     }

@@ -2,16 +2,20 @@ package com.dhatech.roku.airplay.session
 
 import android.util.Log
 import com.dhatech.roku.airplay.discovery.AirPlayReceiver
+import com.dhatech.roku.airplay.discovery.EndpointProber
 import com.dhatech.roku.airplay.discovery.FeatureFlags
 import com.dhatech.roku.airplay.discovery.PairingPath
+import com.dhatech.roku.airplay.discovery.parseStatusFlags
 import com.dhatech.roku.airplay.pairing.PairSetup
 import com.dhatech.roku.airplay.pairing.PairVerify
 import com.dhatech.roku.airplay.pairing.PairingCredentials
 import com.dhatech.roku.airplay.pairing.PairingException
 import com.dhatech.roku.airplay.pairing.PairingProtocol
+import com.dhatech.roku.airplay.pairing.PairingStage
 import com.dhatech.roku.airplay.pairing.PairingTransport
 import com.dhatech.roku.airplay.pairing.RawPairing
 import com.dhatech.roku.airplay.pairing.SessionKeys
+import com.dhatech.roku.airplay.pairing.TlvError
 import com.dhatech.roku.airplay.plist.BinaryPlistReader
 import com.dhatech.roku.airplay.plist.PlistValue
 import com.dhatech.roku.airplay.plist.asArray
@@ -19,6 +23,7 @@ import com.dhatech.roku.airplay.plist.asData
 import com.dhatech.roku.airplay.plist.asDict
 import com.dhatech.roku.airplay.plist.asInt
 import com.dhatech.roku.airplay.plist.asLong
+import com.dhatech.roku.airplay.plist.asString
 import com.dhatech.roku.airplay.rtsp.DigestRejectedException
 import com.dhatech.roku.airplay.rtsp.RtspClient
 import com.dhatech.roku.airplay.rtsp.RtspException
@@ -172,31 +177,16 @@ class MirrorSession(
             keys = keys ?: authenticate(client, pinProvider)
             sessionKeys = keys
 
-            _state.value = SessionState.SettingUp(receiver)
-            val deviceId = receiver.deviceId ?: sessionUuid
-            val timing = TimingServer().also { it.start() }
-            timingServer = timing
-
-            val modern = shouldUseModernSession(
-                hasEncryptedControl = keys != null && activeCredentials != null,
-                protocol = activeCredentials?.protocol,
-                fairPlaySupported = fairPlayResult.supported,
+            val dataStream = openDataStream(
+                client = client,
+                keys = keys,
+                fairPlayResult = fairPlayResult,
+                width = width,
+                height = height,
+                frameRate = frameRate,
+                videoEnabled = videoEnabled,
+                lowLatencyMode = lowLatencyMode,
             )
-            val dataStream = if (modern) {
-                setupModernSession(
-                    client = client,
-                    fairPlayResult = fairPlayResult,
-                    timingPort = timing.port,
-                    sharedSecret = keys?.sharedSecret ?: ByteArray(0),
-                    videoEnabled = videoEnabled,
-                    lowLatencyMode = lowLatencyMode,
-                )
-            } else {
-                setupLegacySession(
-                    client, deviceId, timing.port, fairPlayResult.keys,
-                    width, height, frameRate, lowLatencyMode,
-                )
-            }
 
             dataStream?.connect()
             stream = dataStream
@@ -212,6 +202,50 @@ class MirrorSession(
         } catch (e: Exception) {
             handleConnectError(e)
             throw e
+        }
+    }
+
+    @Suppress("LongParameterList")
+    private suspend fun openDataStream(
+        client: RtspClient,
+        keys: SessionKeys?,
+        fairPlayResult: FairPlayResult,
+        width: Int,
+        height: Int,
+        frameRate: Int,
+        videoEnabled: Boolean,
+        lowLatencyMode: Boolean,
+    ): MirrorStream? {
+        _state.value = SessionState.SettingUp(receiver)
+        val deviceId = receiver.deviceId ?: sessionUuid
+        val timing = TimingServer().also { it.start() }
+        timingServer = timing
+
+        val modern = shouldUseModernSession(
+            hasEncryptedControl = keys != null && activeCredentials != null,
+            protocol = activeCredentials?.protocol,
+            fairPlaySupported = fairPlayResult.supported,
+        )
+        return if (modern) {
+            setupModernSession(
+                client = client,
+                fairPlayResult = fairPlayResult,
+                timingPort = timing.port,
+                sharedSecret = keys?.sharedSecret ?: ByteArray(0),
+                videoEnabled = videoEnabled,
+                lowLatencyMode = lowLatencyMode,
+            )
+        } else {
+            setupLegacySession(
+                client,
+                deviceId,
+                timing.port,
+                fairPlayResult.keys,
+                width,
+                height,
+                frameRate,
+                lowLatencyMode,
+            )
         }
     }
 
@@ -309,7 +343,8 @@ class MirrorSession(
             .onFailure { Log.w(TAG, "GET /info failed: ${it.message}") }
             .getOrNull()
         val features = FeatureFlags(receiver.features.raw or (info?.features ?: 0L))
-        Log.i(TAG, "[PAIR] pairing path: HAP (features=0x%X)".format(features.raw))
+        val isRoku = info?.isRoku ?: receiver.isRoku
+        Log.i(TAG, "[PAIR] pairing path: HAP (features=0x%X, roku=$isRoku)".format(features.raw))
 
         val stored = credentialStore.load(receiver.stableId)
         Log.i(
@@ -319,10 +354,19 @@ class MirrorSession(
                 else -> "found (${stored.protocol}) — verifying"
             },
         )
-        return when {
-            stored != null -> verifyStored(client, stored)
-            else -> establishPairing(client, pinProvider, features, info?.statusFlags)
+        if (stored != null) {
+            try {
+                return verifyStored(client, stored)
+            } catch (e: Exception) {
+                if (!shouldClearStaleStoredCredentials(e)) throw e
+                Log.w(TAG, "Stored credentials rejected (${e.message}); forgetting and re-pairing")
+                credentialStore.forget(receiver.stableId)
+                activeCredentials = null
+                rawSharedSecret = null
+                resetConnection(client)
+            }
         }
+        return establishPairing(client, pinProvider, features, info?.statusFlags, isRoku)
     }
 
     /** Re-uses a stored pairing: plain pair-verify, or raw verify on plaintext. */
@@ -338,34 +382,45 @@ class MirrorSession(
         }
     }
 
+    private fun isPasswordRequired(statusFlags: Long?): Boolean {
+        val txtPw = receiver.txtRecords["pw"]
+        return when {
+            txtPw != null -> txtPw.equals("true", ignoreCase = true)
+            statusFlags != null -> (statusFlags and STATUS_FLAG_PASSWORD) != 0L
+            else -> receiver.requiresPassword
+        }
+    }
+
+    private fun isPinRequired(statusFlags: Long?): Boolean {
+        val txtFlags = parseStatusFlags(receiver.txtRecords["flags"] ?: receiver.txtRecords["sf"]) ?: 0L
+        val infoPin = statusFlags != null && (statusFlags and STATUS_FLAG_PIN_PAIRING) != 0L
+        return infoPin || (txtFlags and STATUS_FLAG_PIN_PAIRING != 0L)
+    }
+
     private suspend fun establishPairing(
         client: RtspClient,
         pinProvider: PinProvider,
         features: FeatureFlags,
         statusFlags: Long?,
+        isRoku: Boolean,
     ): SessionKeys? {
-        val passwordRequired = (statusFlags != null && statusFlags and STATUS_FLAG_PASSWORD != 0L) ||
-            receiver.requiresPassword
-        val pinRequired = statusFlags != null && statusFlags and STATUS_FLAG_PIN_PAIRING != 0L
-        val modern = features.usesModernPairing || (receiver.isRoku && features.supportsUnifiedPairSetup)
+        val passwordRequired = isPasswordRequired(statusFlags)
+        val pinRequired = isPinRequired(statusFlags)
+        val modern = features.usesModernPairing || (isRoku && features.supportsUnifiedPairSetup)
         val transientCapable = features.supportsSystemPairing || features.supportsCoreUtilsPairingAndEncryption
         Log.i(
             TAG,
-            "Pairing plan: roku=${receiver.isRoku} modern=$modern password=$passwordRequired " +
+            "Pairing plan: roku=$isRoku modern=$modern password=$passwordRequired " +
                 "pin=$pinRequired transient=$transientCapable features=$features",
         )
 
         return when {
-            // The password belongs to Digest, never SRP — but Mac-class
-            // receivers also refuse transient pairing outright (doubletake's
-            // own code is rejected the same way, verified live). Fall back to
-            // the on-screen PIN flow, which is what actually pairs.
+            pinRequired -> codePairing(client, pinProvider, PairingProtocol.HAP_SCREEN_CAPTURE)
+
             passwordRequired && modern && transientCapable ->
                 tryTransientThenCode(client, pinProvider)
 
             passwordRequired -> codePairing(client, pinProvider, PairingProtocol.HAP_LEGACY)
-
-            pinRequired -> codePairing(client, pinProvider, PairingProtocol.HAP_SCREEN_CAPTURE)
 
             !transientCapable -> codePairing(client, pinProvider, hkpProtocol(modern))
 
@@ -460,58 +515,187 @@ class MirrorSession(
         rawSharedSecret = result.sharedSecret
     }
 
+    private data class ActivePairAttempt(val protocol: PairingProtocol, val setup: PairSetup)
+
+    private suspend fun resetConnection(client: RtspClient) {
+        runCatching { client.close() }
+        client.connect()
+    }
+
+    private fun alternateProtocol(protocol: PairingProtocol): PairingProtocol? = when (protocol) {
+        PairingProtocol.HAP_SCREEN_CAPTURE -> PairingProtocol.HAP_LEGACY
+        PairingProtocol.HAP_LEGACY -> PairingProtocol.HAP_SCREEN_CAPTURE
+        else -> null
+    }
+
+    private fun isThrottlingError(error: Throwable): Boolean =
+        error is PairingException && error.tlvError in THROTTLING_TLV_ERRORS
+
+    private fun isRetryableProtocolError(error: Throwable): Boolean = when {
+        error is DigestRejectedException -> false
+        error is RtspException -> true
+        error is PairingException -> !isThrottlingError(error)
+        else -> false
+    }
+
+    private fun shouldClearStaleStoredCredentials(error: Throwable): Boolean = when {
+        error is DigestRejectedException -> false
+        error is PairingException -> !isThrottlingError(error)
+        error is RtspException -> error.statusCode in STALE_PAIRING_HTTP_CODES
+        else -> false
+    }
+
+    private fun shouldFallbackAfterComplete(error: Throwable): Boolean {
+        if (error is DigestRejectedException) return false
+        if (error is RtspException) return true
+        return error is PairingException &&
+            !isThrottlingError(error) &&
+            (error.stage == PairingStage.IDENTITY_EXCHANGE || error.stage == PairingStage.SRP_PROOF)
+    }
+
     /**
      * Code/password pairing: raises the receiver's prompt (pair-pin-start is
-     * what makes macOS open its pairing window and Apple TV display its code),
-     * collects the code, runs full pair-setup and pair-verify, and stores the
-     * credentials only once the receiver has accepted them.
+     * what makes macOS open its pairing window and Apple TV/Roku display its
+     * code), collects the code, runs full pair-setup and pair-verify, and
+     * stores the credentials only once the receiver has accepted them.
      */
-    @Suppress("LongMethod")
     private suspend fun codePairing(
         client: RtspClient,
         pinProvider: PinProvider,
         protocol: PairingProtocol,
     ): SessionKeys {
-        var activeProtocol = protocol
-        var hkp = activeProtocol.hkpVersion ?: PairingTransport.HKP_LEGACY
-        sendPinStart(client, hkp)
-
-        var setup = PairSetup(
-            client,
-            hkpVersion = hkp,
-            screenCaptureAcl = activeProtocol == PairingProtocol.HAP_SCREEN_CAPTURE,
+        val (attempt, fellBackAtBegin) = beginWithProtocolFallback(client, protocol)
+        val pin = promptForPin(pinProvider)
+        val (credentials, fellBackAtComplete) = completeWithFallback(
+            client = client,
+            attempt = attempt,
+            pin = pin,
+            pinProvider = pinProvider,
+            allowFallback = !fellBackAtBegin,
         )
-        try {
-            setup.begin()
-        } catch (e: Exception) {
-            val canFallbackRoku = receiver.isRoku && activeProtocol == PairingProtocol.HAP_SCREEN_CAPTURE
-            if (!canFallbackRoku || (e !is RtspException && e !is PairingException)) throw e
-            Log.w(TAG, "Roku rejected HKP $hkp pair-setup M1 (${e.message}); falling back to HKP 3")
-            runCatching { client.close() }
-            client.connect()
-            activeProtocol = PairingProtocol.HAP_LEGACY
-            hkp = PairingTransport.HKP_LEGACY
-            sendPinStart(client, hkp)
-            setup = PairSetup(client, hkpVersion = hkp, screenCaptureAcl = false)
-            setup.begin()
-        }
-
-        _state.value = SessionState.AwaitingPin(receiver)
-        val pin = pinProvider.requestPin()
-            ?: throw PairingException("Pairing cancelled before the code was entered")
-
-        _state.value = SessionState.Pairing(receiver)
-        val credentials = setup.complete(pin.trim())
-
-        val keys = PairVerify(client, credentials, activeProtocol).verify()
+        val (verifiedCredentials, keys) = verifyWithFallback(
+            client = client,
+            credentials = credentials,
+            allowProtocolSwitch = !fellBackAtBegin && !fellBackAtComplete,
+        )
         client.enableEncryption(keys)
-        credentialStore.save(receiver.stableId, credentials, receiver.name)
-        activeCredentials = credentials
-        Log.i(TAG, "Paired with ${receiver.name} ($activeProtocol) and stored credentials")
+        credentialStore.save(receiver.stableId, verifiedCredentials, receiver.name)
+        activeCredentials = verifiedCredentials
+        Log.i(TAG, "Paired with ${receiver.name} (${verifiedCredentials.protocol}) and stored credentials")
         return keys
     }
 
-    private suspend fun sendPinStart(client: RtspClient, hkp: String) {
+    private suspend fun startPairingAttempt(client: RtspClient, protocol: PairingProtocol): ActivePairAttempt {
+        val hkp = protocol.hkpVersion ?: PairingTransport.HKP_LEGACY
+        // Bind /pair-pin-start and /pair-setup to the same X-Apple-Client-ID so
+        // receivers that track PIN sessions by client identifier accept M3.
+        val pairingClientId = UUID.randomUUID().toString()
+        sendPinStart(client, hkp, pairingClientId)
+        val setup = PairSetup(
+            transport = client,
+            clientId = pairingClientId,
+            hkpVersion = hkp,
+            screenCaptureAcl = protocol == PairingProtocol.HAP_SCREEN_CAPTURE,
+        )
+        setup.begin()
+        return ActivePairAttempt(protocol, setup)
+    }
+
+    private suspend fun beginWithProtocolFallback(
+        client: RtspClient,
+        initialProtocol: PairingProtocol,
+    ): Pair<ActivePairAttempt, Boolean> = try {
+        startPairingAttempt(client, initialProtocol) to false
+    } catch (e: Exception) {
+        val fallback = alternateProtocol(initialProtocol)
+        if (fallback == null || !isRetryableProtocolError(e)) throw e
+        Log.w(TAG, "HKP ${initialProtocol.hkpVersion} pair-setup M1/M2 failed (${e.message}); trying $fallback")
+        resetConnection(client)
+        startPairingAttempt(client, fallback) to true
+    }
+
+    private suspend fun promptForPin(pinProvider: PinProvider): String {
+        _state.value = SessionState.AwaitingPin(receiver)
+        val raw = pinProvider.requestPin()
+            ?: throw PairingException("Pairing cancelled before the code was entered")
+        _state.value = SessionState.Pairing(receiver)
+        return raw.trim()
+    }
+
+    private suspend fun completeWithFallback(
+        client: RtspClient,
+        attempt: ActivePairAttempt,
+        pin: String,
+        pinProvider: PinProvider,
+        allowFallback: Boolean,
+    ): Pair<PairingCredentials, Boolean> = try {
+        attempt.setup.complete(pin) to false
+    } catch (e: Exception) {
+        val fallback = alternateProtocol(attempt.protocol)
+        if (!allowFallback || fallback == null || !shouldFallbackAfterComplete(e)) throw e
+        retryCompleteOnAlternateProtocol(client, attempt.protocol, fallback, pin, pinProvider, e) to true
+    }
+
+    private suspend fun retryCompleteOnAlternateProtocol(
+        client: RtspClient,
+        failedProtocol: PairingProtocol,
+        fallback: PairingProtocol,
+        pin: String,
+        pinProvider: PinProvider,
+        originalError: Exception,
+    ): PairingCredentials {
+        Log.w(TAG, "$failedProtocol pair-setup failed (${originalError.message}); retrying with $fallback")
+        resetConnection(client)
+        val fallbackAttempt = try {
+            startPairingAttempt(client, fallback)
+        } catch (beginError: Exception) {
+            throw originalError.apply { addSuppressed(beginError) }
+        }
+        return try {
+            fallbackAttempt.setup.complete(pin)
+        } catch (retryError: Exception) {
+            // Re-running /pair-pin-start + M1 may display a new PIN on screen.
+            val pinRotated = retryError is PairingException &&
+                retryError.stage == PairingStage.SRP_PROOF &&
+                !isThrottlingError(retryError)
+            if (!pinRotated) throw retryError
+            Log.i(TAG, "Fallback $fallback rejected prior PIN (code rotated); requesting updated PIN")
+            resetConnection(client)
+            val refreshedAttempt = startPairingAttempt(client, fallback)
+            val refreshedPin = promptForPin(pinProvider)
+            refreshedAttempt.setup.complete(refreshedPin)
+        }
+    }
+
+    private suspend fun verifyWithFallback(
+        client: RtspClient,
+        credentials: PairingCredentials,
+        allowProtocolSwitch: Boolean,
+    ): Pair<PairingCredentials, SessionKeys> = try {
+        credentials to PairVerify(client, credentials, credentials.protocol).verify()
+    } catch (e: Exception) {
+        if (!isRetryableProtocolError(e)) throw e
+        Log.w(TAG, "Post-setup pair-verify failed (${e.message}); retrying on fresh connection")
+        resetConnection(client)
+        retryVerifyAfterReconnect(client, credentials, allowProtocolSwitch)
+    }
+
+    private suspend fun retryVerifyAfterReconnect(
+        client: RtspClient,
+        credentials: PairingCredentials,
+        allowProtocolSwitch: Boolean,
+    ): Pair<PairingCredentials, SessionKeys> = try {
+        credentials to PairVerify(client, credentials, credentials.protocol).verify()
+    } catch (e: Exception) {
+        val alternate = alternateProtocol(credentials.protocol)
+        if (!allowProtocolSwitch || alternate == null || !isRetryableProtocolError(e)) throw e
+        Log.w(TAG, "pair-verify failed under ${credentials.protocol} (${e.message}); trying $alternate")
+        resetConnection(client)
+        val updated = credentials.copy(protocol = alternate)
+        updated to PairVerify(client, updated, alternate).verify()
+    }
+
+    private suspend fun sendPinStart(client: RtspClient, hkp: String, clientId: String) {
         runCatching {
             client.send(
                 RtspRequest(
@@ -519,6 +703,7 @@ class MirrorSession(
                     "/pair-pin-start",
                     headers = buildMap {
                         put("X-Apple-HKP", hkp)
+                        put("X-Apple-Client-ID", clientId)
                         if (hkp != PairingTransport.HKP_LEGACY) put("X-Apple-SupportedPINLengths", "4")
                     },
                 ),
@@ -526,7 +711,12 @@ class MirrorSession(
         }.onFailure { Log.w(TAG, "pair-pin-start failed; continuing", it) }
     }
 
-    private class ReceiverProbe(val statusFlags: Long?, val features: Long?, val publicKey: ByteArray?)
+    private class ReceiverProbe(
+        val statusFlags: Long?,
+        val features: Long?,
+        val publicKey: ByteArray?,
+        val isRoku: Boolean,
+    )
 
     /**
      * GET /info, the same probe doubletake runs before pairing. It reports the
@@ -542,23 +732,30 @@ class MirrorSession(
             ),
         )
         if (!response.isSuccess) {
-            throw RtspException("GET /info returned ${response.statusCode} ${response.reason}")
+            throw RtspException("GET /info returned ${response.statusCode} ${response.reason}", response.statusCode)
         }
-        val dict = BinaryPlistReader.read(response.body).asDict()
+        val dict = EndpointProber.parseInfoPlist(response.body)
             ?: throw RtspException("GET /info body was not a plist dictionary")
         Log.i(
             TAG,
-            "[INFO] keys=${dict.entries.keys}\n" +
+            "[INFO] keys=${dict.keys}\n" +
                 "[INFO] features=${dict["features"]?.asLong()} " +
                 "statusFlags=${dict["statusFlags"]?.asLong()} " +
                 "volumeControlType=${dict["volumeControlType"]?.asLong()} " +
                 "audioLatencies=${dict["audioLatencies"]}\n" +
                 "[INFO] displays=${dict["displays"]}",
         )
+        val infoIsRoku = receiver.isRoku || listOfNotNull(
+            dict["model"]?.asString(),
+            dict["manufacturer"]?.asString(),
+            dict["osInfo"]?.asString(),
+            dict["name"]?.asString(),
+        ).any { it.contains("roku", ignoreCase = true) }
         return ReceiverProbe(
-            statusFlags = dict["statusFlags"]?.asLong(),
+            statusFlags = dict["statusFlags"]?.asLong() ?: dict["flags"]?.asLong(),
             features = dict["features"]?.asLong(),
             publicKey = dict["pk"]?.asData(),
+            isRoku = infoIsRoku,
         )
     }
 
@@ -983,6 +1180,8 @@ class MirrorSession(
         private const val NANOS_PER_SECOND = 1_000_000_000L
 
         private val FAIRPLAY_UNSUPPORTED_CODES = setOf(404, 405, 501)
+        private val STALE_PAIRING_HTTP_CODES = setOf(400, 401, 403)
+        private val THROTTLING_TLV_ERRORS = setOf(TlvError.BACKOFF, TlvError.MAX_TRIES, TlvError.MAX_PEERS)
 
         internal fun shouldSkipFairPlay(statusCode: Int, allowSkip: Boolean): Boolean =
             allowSkip && statusCode in FAIRPLAY_UNSUPPORTED_CODES

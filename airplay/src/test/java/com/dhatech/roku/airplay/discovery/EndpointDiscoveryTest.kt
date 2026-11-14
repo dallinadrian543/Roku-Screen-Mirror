@@ -188,4 +188,47 @@ class EndpointDiscoveryTest {
                 ?.get("name")?.asString(),
         )
     }
+
+    @Test
+    fun `requiresPassword handles absent sf, hex sf, and explicit pw TXT records`() {
+        val base = AirPlayReceiver(
+            name = "OEM TV",
+            address = InetAddress.getByName("192.168.1.99"),
+            port = 7000,
+            deviceId = "AA:BB:CC:11:22:33",
+            model = "7104X",
+            sourceVersion = null,
+            publicIdentifier = null,
+            publicKeyHex = null,
+            features = FeatureFlags(1L shl 7),
+        )
+        assertFalse(base.requiresPassword)
+        assertFalse(base.copy(txtRecords = mapOf("sf" to "0x200")).requiresPassword)
+        assertTrue(base.copy(txtRecords = mapOf("sf" to "0x204")).requiresPassword)
+        assertFalse(base.copy(txtRecords = mapOf("pw" to "false", "sf" to "0x204")).requiresPassword)
+        assertTrue(base.copy(txtRecords = mapOf("pw" to "true")).requiresPassword)
+
+        val infoXml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <plist version="1.0">
+            <dict>
+                <key>name</key><string>Guest Room TV</string>
+                <key>model</key><string>C105X</string>
+                <key>features</key><integer>128</integer>
+                <key>statusFlags</key><integer>516</integer>
+                <key>pw</key><false/>
+            </dict>
+            </plist>
+        """.trimIndent()
+        val parsed = EndpointProber.parseInfoReceiver(
+            address = InetAddress.getByName("192.168.1.99"),
+            port = 7000,
+            body = infoXml.toByteArray(Charsets.UTF_8),
+            source = DiscoverySource.LAN_SCAN,
+        )
+        assertNotNull(parsed)
+        assertFalse(parsed!!.requiresPassword)
+        assertEquals("0x204", parsed.txtRecords["sf"])
+        assertEquals("false", parsed.txtRecords["pw"])
+    }
 }
