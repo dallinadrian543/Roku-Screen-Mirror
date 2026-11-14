@@ -140,7 +140,7 @@ class MirrorSession(
      */
     // Sequential handshake (pairing → FairPlay → SETUP phases); splitting it
     // would scatter the session state it threads through.
-    @Suppress("LongMethod", "LongParameterList")
+    @Suppress("LongParameterList")
     suspend fun connect(
         width: Int,
         height: Int,
@@ -153,110 +153,55 @@ class MirrorSession(
         _state.value = SessionState.Connecting(receiver)
         this.passwordProvider = passwordProvider
 
-        val client = RtspClient(
-            address = receiver.address,
-            port = receiver.port,
-            clientName = clientName,
-        )
+        val client = RtspClient(address = receiver.address, port = receiver.port, clientName = clientName)
         rtsp = client
 
         try {
             client.connect()
-
-            // A "require password" receiver challenges every request — pairing
-            // included — so the Digest answerer must be live before the first
-            // one goes out.
             client.digestPasswordProvider = { resolvePassword() }
 
-            // Modern receivers (macOS, Apple TV) pair before anything else:
-            // they answer 403 to every request from an unpaired client —
-            // OPTIONS and fp-setup included. FairPlay and the SETUPs then run
-            // on the encrypted control channel, which is what real senders do
-            // (pair-verify → fp-setup → SETUP).
-            var keys: SessionKeys? = null
-            if (receiver.pairingPath == PairingPath.HAP) {
-                keys = authenticate(client, pinProvider)
+            var keys: SessionKeys? = if (receiver.pairingPath == PairingPath.HAP) {
+                authenticate(client, pinProvider)
             } else {
                 sendAuthorized(client, SetupRequests.options()).requireSuccess("OPTIONS")
+                null
             }
 
-            // FairPlay key exchange: receivers unwrap the `ekey` from the first
-            // SETUP with the keymsg we send here, and both sides derive the video
-            // stream key from the result. Skipping it leaves receivers that do a
-            // real FairPlay decrypt (爱思投屏 among them) with a mismatched key.
-            val fairPlay = doFairPlay(client)
-
-            // Legacy receivers authenticate here instead (a no-op unless they
-            // speak HAP); the modern path already paired above.
+            val fairPlayResult = doFairPlay(client, allowSkip = keys != null)
+            keys = reverifyIfClosed(client, fairPlayResult, keys)
             keys = keys ?: authenticate(client, pinProvider)
             sessionKeys = keys
 
             _state.value = SessionState.SettingUp(receiver)
-
             val deviceId = receiver.deviceId ?: sessionUuid
-
-            // The receiver polls this for clock sync; without it frames get a
-            // zero local timestamp and never render.
             val timing = TimingServer().also { it.start() }
             timingServer = timing
 
-            // A PD-paired session (macOS class) speaks doubletake's modern
-            // descriptor-only form: the control SETUP creates the session
-            // without any root ekey/eiv, and the video SETUP carries the
-            // PD-mixed key inside the stream descriptor. The legacy UxPlay
-            // form keeps its own shapes below.
-            val modern = activeCredentials?.protocol?.usesPdMixing == true
-            val hostAddress = receiver.address.hostAddress
-            val port = receiver.port
-
-            var dataStream: MirrorStream?
-            if (modern) {
-                val setup = ModernSessionSetup(client, receiver, sessionUuid, clientName, clock)
-                val result = setup.setup(
-                    activeCredentials!!,
-                    fairPlay,
-                    streamMasterKey(fairPlay),
-                    timing.port,
-                    keys?.sharedSecret ?: ByteArray(0),
+            val modern = shouldUseModernSession(
+                hasEncryptedControl = keys != null && activeCredentials != null,
+                protocol = activeCredentials?.protocol,
+                fairPlaySupported = fairPlayResult.supported,
+            )
+            val dataStream = if (modern) {
+                setupModernSession(
+                    client = client,
+                    fairPlayResult = fairPlayResult,
+                    timingPort = timing.port,
+                    sharedSecret = keys?.sharedSecret ?: ByteArray(0),
                     videoEnabled = videoEnabled,
                     lowLatencyMode = lowLatencyMode,
                 )
-                modernSetup = setup
-                dataStream = result.stream
-                skipRecord = result.skipRecord
-                modernControlUri = result.controlUri
-                modernAudio = result.audio
-
-                if (skipRecord) {
-                    Log.i(TAG, "Receiver returned skipRecord=true; skipping RECORD")
-                } else {
-                    sendAuthorized(
-                        client,
-                        ModernSetupRequests.modernRecord(result.audioUri, sessionUuid),
-                    ).requireSuccess("RECORD")
-                }
             } else {
-                dataStream = setupLegacySession(
-                    client,
-                    deviceId,
-                    timing.port,
-                    fairPlay,
-                    width,
-                    height,
-                    frameRate,
-                    lowLatencyMode,
+                setupLegacySession(
+                    client, deviceId, timing.port, fairPlayResult.keys,
+                    width, height, frameRate, lowLatencyMode,
                 )
             }
 
-            // Sound-only modern sessions have no video channel to open.
             dataStream?.connect()
             stream = dataStream
-
             startFeedbackLoop(client)
 
-            // Sound-only has no video geometry to report — a StreamingAudio
-            // state keeps the resolution line out of the status panel and the
-            // notification, while the rate still updates from the audio bytes.
             _state.value = if (videoEnabled) {
                 SessionState.Mirroring(receiver, width, height, frameRate)
             } else {
@@ -265,26 +210,75 @@ class MirrorSession(
             Log.i(TAG, "Mirroring session up: ${width}x$height@$frameRate to $receiver")
             return dataStream
         } catch (e: Exception) {
-            val requiresRepairing = e is PairingException &&
-                e.message?.contains("re-pairing", ignoreCase = true) == true
-            if (requiresRepairing) {
-                // Stored credentials are stale; drop them so the next attempt prompts.
-                credentialStore.forget(receiver.stableId)
-            }
-            if (e is DigestRejectedException) {
-                // A rejected password must not survive: the next session has to
-                // ask the user again instead of looping on a known-bad value.
-                runCatching { credentialStore.forgetPassword(receiver.stableId) }
-            }
-            _state.value = SessionState.Failed(
-                receiver = receiver,
-                reason = e.message ?: e::class.simpleName.orEmpty(),
-                cause = e,
-                requiresRepairing = requiresRepairing,
-            )
-            close()
+            handleConnectError(e)
             throw e
         }
+    }
+
+    private suspend fun reverifyIfClosed(
+        client: RtspClient,
+        fairPlayResult: FairPlayResult,
+        keys: SessionKeys?,
+    ): SessionKeys? {
+        val creds = activeCredentials?.takeIf { it.protocol != PairingProtocol.RAW }
+        if (!fairPlayResult.connectionClosed || keys == null || creds == null) return keys
+        runCatching { client.close() }
+        client.connect()
+        return verifyStored(client, creds)
+    }
+
+    @Suppress("LongParameterList")
+    private suspend fun setupModernSession(
+        client: RtspClient,
+        fairPlayResult: FairPlayResult,
+        timingPort: Int,
+        sharedSecret: ByteArray,
+        videoEnabled: Boolean,
+        lowLatencyMode: Boolean,
+    ): MirrorStream? {
+        val setup = ModernSessionSetup(client, receiver, sessionUuid, clientName, clock)
+        val result = setup.setup(
+            activeCredentials!!,
+            fairPlayResult.keys,
+            streamMasterKey(fairPlayResult.keys),
+            timingPort,
+            sharedSecret,
+            videoEnabled = videoEnabled,
+            lowLatencyMode = lowLatencyMode,
+            fairPlaySupported = fairPlayResult.supported,
+        )
+        modernSetup = setup
+        skipRecord = result.skipRecord
+        modernControlUri = result.controlUri
+        modernAudio = result.audio
+
+        if (skipRecord) {
+            Log.i(TAG, "Receiver returned skipRecord=true; skipping RECORD")
+        } else {
+            sendAuthorized(
+                client,
+                ModernSetupRequests.modernRecord(result.audioUri, sessionUuid),
+            ).requireSuccess("RECORD")
+        }
+        return result.stream
+    }
+
+    private suspend fun handleConnectError(e: Exception) {
+        val requiresRepairing = e is PairingException &&
+            e.message?.contains("re-pairing", ignoreCase = true) == true
+        if (requiresRepairing) {
+            credentialStore.forget(receiver.stableId)
+        }
+        if (e is DigestRejectedException) {
+            runCatching { credentialStore.forgetPassword(receiver.stableId) }
+        }
+        _state.value = SessionState.Failed(
+            receiver = receiver,
+            reason = e.message ?: e::class.simpleName.orEmpty(),
+            cause = e,
+            requiresRepairing = requiresRepairing,
+        )
+        close()
     }
 
     /**
@@ -578,12 +572,26 @@ class MirrorSession(
      * unwrap from the SETUP's `ekey` is the raw key we chose, mixed with the
      * pair-verify secret when the pairing carried X-Apple-PD.
      */
-    private suspend fun doFairPlay(client: RtspClient): FairPlayKeys {
+    private suspend fun doFairPlay(client: RtspClient, allowSkip: Boolean): FairPlayResult {
         val random = SecureRandom()
         val fpsap = FpsapSession(random)
 
         val m2 = client.send(octetStream("/fp-setup", fpsap.message1().toUByteByteArray(), et = true))
-            .requireSuccess("fp-setup (setup)")
+        if (shouldSkipFairPlay(m2.statusCode, allowSkip)) {
+            Log.w(
+                TAG,
+                "[FAIRPLAY] Receiver returned ${m2.statusCode} ${m2.reason} for /fp-setup; " +
+                    "continuing without FairPlay",
+            )
+            val fallbackAes = ByteArray(FAIRPLAY_KEY_BYTES).also(random::nextBytes)
+            val fallbackEiv = ByteArray(FAIRPLAY_KEY_BYTES).also(random::nextBytes)
+            return FairPlayResult(
+                keys = FairPlayKeys(aeskey = fallbackAes, eiv = fallbackEiv, ekey = ByteArray(0)),
+                supported = false,
+                connectionClosed = m2["Connection"]?.equals("close", ignoreCase = true) == true,
+            )
+        }
+        m2.requireSuccess("fp-setup (setup)")
         Log.i(TAG, "[FAIRPLAY] m1/m2 complete (${m2.body.size}B reply)")
         val m3 = fpsap.exchangeM3(m2.body.toUByteInts())
         val m4 = client.send(octetStream("/fp-setup", m3.toUByteByteArray(), et = true))
@@ -595,7 +603,10 @@ class MirrorSession(
         val aeskey = ByteArray(16).also(random::nextBytes)
         val ekey = fpsap.wrapKey(aeskey)
         Log.i(TAG, "FairPlay aeskey (16 bytes): ${aeskey.toHex()}")
-        return FairPlayKeys(aeskey = aeskey, eiv = eiv, ekey = ekey)
+        return FairPlayResult(
+            keys = FairPlayKeys(aeskey = aeskey, eiv = eiv, ekey = ekey),
+            supported = true,
+        )
     }
 
     /** Legacy UxPlay-form SETUP sequence: root ekey/eiv, media streams, RECORD. */
@@ -951,30 +962,43 @@ class MirrorSession(
         return this
     }
 
-    private companion object {
-        const val TAG = "MirrorSession"
-        const val CONTENT_TYPE_OCTET_STREAM = "application/octet-stream"
+    internal companion object {
+        private const val TAG = "MirrorSession"
+        private const val CONTENT_TYPE_OCTET_STREAM = "application/octet-stream"
 
         /**
          * /info statusFlags bit 7: a playback password is configured — for
          * modern receivers it answers Digest challenges only, never SRP.
          */
-        const val STATUS_FLAG_PASSWORD = 1L shl 7
+        private const val STATUS_FLAG_PASSWORD = 1L shl 7
 
         /** /info statusFlags bit 9: the receiver displays a one-time code for pairing. */
-        const val STATUS_FLAG_PIN_PAIRING = 1L shl 9
+        private const val STATUS_FLAG_PIN_PAIRING = 1L shl 9
 
-        const val FAIRPLAY_KEY_BYTES = 16
+        private const val FAIRPLAY_KEY_BYTES = 16
 
         /** UxPlay expects feedback every two seconds and gives up after 15. */
-        const val FEEDBACK_INTERVAL_MS = 2_000L
+        private const val FEEDBACK_INTERVAL_MS = 2_000L
 
-        const val NANOS_PER_SECOND = 1_000_000_000L
+        private const val NANOS_PER_SECOND = 1_000_000_000L
+
+        private val FAIRPLAY_UNSUPPORTED_CODES = setOf(404, 405, 501)
+
+        internal fun shouldSkipFairPlay(statusCode: Int, allowSkip: Boolean): Boolean =
+            allowSkip && statusCode in FAIRPLAY_UNSUPPORTED_CODES
+
+        internal fun shouldUseModernSession(
+            hasEncryptedControl: Boolean,
+            protocol: PairingProtocol?,
+            fairPlaySupported: Boolean,
+        ): Boolean = protocol?.usesPdMixing == true || (hasEncryptedControl && !fairPlaySupported)
     }
 }
 
 /** Result of the FairPlay handshake: the shared AES key plus the wrapped form. */
 internal class FairPlayKeys(val aeskey: ByteArray, val eiv: ByteArray, val ekey: ByteArray)
+
+internal class FairPlayResult(val keys: FairPlayKeys, val supported: Boolean, val connectionClosed: Boolean = false)
 
 /** Convenience accessor used while reading receiver capability plists. */
 internal fun PlistValue?.dictValue(key: String): PlistValue? = asDict()?.get(key)

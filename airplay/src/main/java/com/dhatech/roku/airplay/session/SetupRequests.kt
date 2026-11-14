@@ -305,8 +305,8 @@ object ModernSetupRequests {
      */
     fun modernVideoSetup(
         streamConnectionId: Long,
-        shk: ByteArray,
-        shiv: ByteArray,
+        shk: ByteArray?,
+        shiv: ByteArray?,
         uri: String,
         latencyMs: Int = DEFAULT_MODERN_VIDEO_LATENCY_MS,
     ): RtspRequest {
@@ -319,8 +319,8 @@ object ModernSetupRequests {
                     plistDict { "name" to name }
                 },
             )
-            "shk" to shk
-            "shiv" to shiv
+            if (shk != null) "shk" to shk
+            if (shiv != null) "shiv" to shiv
         }
         val body = plistDict {
             "streams" to PlistValue.Array(listOf(stream))

@@ -65,18 +65,29 @@ class EventChannel private constructor(
 
     /** Reads one HAP frame; returns the plaintext or null at end of stream. */
     private fun readFrame(): ByteArray? {
-        val sizeBytes = ByteArray(2)
-        if (input.read(sizeBytes) < 2) return null
+        val sizeBytes = readBytesOrNull(2) ?: return null
         val size = (sizeBytes[0].toInt() and 0xFF) or ((sizeBytes[1].toInt() and 0xFF) shl 8)
-        if (size < 1 || size > MAX_FRAME) throw IllegalStateException("Invalid event frame size $size")
-        val sealed = ByteArray(size + TAG_LEN)
-        if (input.read(sealed) < sealed.size) return null
-        return ChaChaPolyCipher.open(
+        check(size in 1..MAX_FRAME) { "Invalid event frame size $size" }
+        val sealed = readBytesOrNull(size + TAG_LEN) ?: return null
+        val opened = ChaChaPolyCipher.open(
             keys.readKey,
             ChaChaPolyCipher.nonce(readCounter),
             sealed,
             sizeBytes,
         )
+        readCounter++
+        return opened
+    }
+
+    private fun readBytesOrNull(count: Int): ByteArray? {
+        val out = ByteArray(count)
+        var offset = 0
+        while (offset < count) {
+            val read = input.read(out, offset, count - offset)
+            if (read < 0) return null
+            offset += read
+        }
+        return out
     }
 
     override fun close() {

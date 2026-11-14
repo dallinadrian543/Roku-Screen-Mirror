@@ -63,56 +63,37 @@ internal class ModernSessionSetup(
         sharedSecret: ByteArray,
         videoEnabled: Boolean = true,
         lowLatencyMode: Boolean = false,
+        fairPlaySupported: Boolean = true,
     ): SetupResult {
         val control = sendControlSetup(pairing, timingPort)
         configureMediaClock(control.response, control.timing)
 
-        val hostAddress = receiver.address.hostAddress
-        val port = receiver.port
         val eventPort = runCatching {
             BinaryPlistReader.read(control.response.body).asDict()
                 ?.get("eventPort")?.asInt()
         }.getOrNull() ?: 0
         if (eventPort > 0) {
-            eventChannel = EventChannel.connect(receiver.address, eventPort, sharedSecret, clock)
+            eventChannel = runCatching {
+                EventChannel.connect(receiver.address, eventPort, sharedSecret, clock)
+            }.onFailure {
+                Log.w(TAG, "Event channel connect to $eventPort failed; continuing", it)
+            }.getOrNull()
         } else {
             Log.i(TAG, "Receiver published no eventPort; continuing without the event channel")
         }
 
         // Video is phase 3 of the modern session; audio (phase 2) is a valid
         // stopping point — sound-only sessions end here with no video SETUP.
-        var stream: MirrorStream? = null
-        if (videoEnabled) {
-            val videoConnectionId = Random.nextLong(1, Long.MAX_VALUE)
-            val videoUri = "rtsp://$hostAddress:$port/$videoConnectionId"
-            val latencyMs = if (lowLatencyMode) {
-                ModernSetupRequests.LOW_LATENCY_VIDEO_MS
-            } else {
-                ModernSetupRequests.DEFAULT_MODERN_VIDEO_LATENCY_MS
-            }
-            val streamResponse = client.send(
-                ModernSetupRequests.modernVideoSetup(
-                    streamConnectionId = videoConnectionId,
-                    shk = mixedKey,
-                    shiv = fairPlay.eiv,
-                    uri = videoUri,
-                    latencyMs = latencyMs,
-                ),
-            ).requireSuccess("SETUP (stream)")
-
-            val dataPort = dataPort(streamResponse)
-                ?: throw RtspException("SETUP reply carried no dataPort; cannot open the video channel")
-            Log.i(TAG, "Resolved dataPort = $dataPort")
-            stream = MirrorStream(
-                address = receiver.address,
-                port = dataPort,
-                cipher = null,
-                chacha = ChaChaFrameCipher(sharedSecret, videoConnectionId),
-                timelineId = clock.ptpTimelineId(),
-                modern = true,
-                clock = clock,
+        val stream = if (videoEnabled) {
+            setupVideoStream(
+                fairPlay = fairPlay,
+                mixedKey = mixedKey,
+                sharedSecret = sharedSecret,
                 lowLatencyMode = lowLatencyMode,
+                fairPlaySupported = fairPlaySupported,
             )
+        } else {
+            null
         }
 
         val audio = if (videoEnabled) {
@@ -129,6 +110,64 @@ internal class ModernSessionSetup(
         client.sendIdentityHeaders = true
 
         return SetupResult(stream, control.skipRecord, control.controlUri, audioUri, audio)
+    }
+
+    private suspend fun setupVideoStream(
+        fairPlay: FairPlayKeys,
+        mixedKey: ByteArray,
+        sharedSecret: ByteArray,
+        lowLatencyMode: Boolean,
+        fairPlaySupported: Boolean,
+    ): MirrorStream {
+        val hostAddress = receiver.address.hostAddress
+        val port = receiver.port
+        val videoConnectionId = Random.nextLong(1, Long.MAX_VALUE)
+        val videoUri = "rtsp://$hostAddress:$port/$videoConnectionId"
+        val latencyMs = if (lowLatencyMode) {
+            ModernSetupRequests.LOW_LATENCY_VIDEO_MS
+        } else {
+            ModernSetupRequests.DEFAULT_MODERN_VIDEO_LATENCY_MS
+        }
+        var streamResponse = client.send(
+            ModernSetupRequests.modernVideoSetup(
+                streamConnectionId = videoConnectionId,
+                shk = mixedKey,
+                shiv = fairPlay.eiv,
+                uri = videoUri,
+                latencyMs = latencyMs,
+            ),
+        )
+        if (!streamResponse.isSuccess && !fairPlaySupported) {
+            Log.w(
+                TAG,
+                "Video SETUP with shk/shiv returned ${streamResponse.statusCode}; " +
+                    "retrying without FairPlay key fields",
+            )
+            streamResponse = client.send(
+                ModernSetupRequests.modernVideoSetup(
+                    streamConnectionId = videoConnectionId,
+                    shk = null,
+                    shiv = null,
+                    uri = videoUri,
+                    latencyMs = latencyMs,
+                ),
+            )
+        }
+        streamResponse.requireSuccess("SETUP (stream)")
+
+        val dataPort = dataPort(streamResponse)
+            ?: throw RtspException("SETUP reply carried no dataPort; cannot open the video channel")
+        Log.i(TAG, "Resolved dataPort = $dataPort")
+        return MirrorStream(
+            address = receiver.address,
+            port = dataPort,
+            cipher = null,
+            chacha = ChaChaFrameCipher(sharedSecret, videoConnectionId),
+            timelineId = clock.ptpTimelineId(),
+            modern = true,
+            clock = clock,
+            lowLatencyMode = lowLatencyMode,
+        )
     }
 
     /**
@@ -270,7 +309,7 @@ internal class ModernSessionSetup(
     private fun dataPort(response: RtspResponse): Int? {
         val plist = runCatching { BinaryPlistReader.read(response.body) }.getOrNull() ?: return null
         val stream = plist.asDict()?.get("streams").asArray()?.firstOrNull().asDict() ?: return null
-        return stream["dataPort"].asInt()
+        return stream["dataPort"].asInt() ?: stream["port"].asInt()
     }
 
     /** Receiver-side audio ports from the audio SETUP response's streamConnections or top-level ports. */

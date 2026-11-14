@@ -2,12 +2,10 @@
 
 Android AirPlay sender (`com.dhatech.roku.cast`). Mirrors your phone's screen — and plays its audio — on Roku TVs and streaming players, Apple TVs, Macs, and AirPlay-compatible receivers.
 
-## Screenshots
+## Warning!!!
 
-<p align="center">
-  <img src="images/home.png" width="270" alt="Receiver discovery">
-  <img src="images/settings.png" width="270" alt="Settings">
-</p>
+- Requires sideloading debug signed apk!!!
+- This code is modified and the apks are created using the gemini ai studio.
 
 ## Features
 
@@ -42,6 +40,7 @@ Debug builds integrate LeakCanary for leak detection; release builds use R8 full
 
 Built on open-source AirPlay and protocol research:
 
+- [kite](https://github.com/itsHenry35/Kite) — original source code modified for this forked project
 - [doubletake](https://github.com/omarroth/doubletake) — Go AirPlay sender; modern session flows are Kotlin ports of it
 - [UxPlay](https://github.com/FDH2/UxPlay) — open-source AirPlay receiver; a key reference during development
 - [pyatv](https://github.com/postlund/pyatv) — AirPlay 2 protocol reference

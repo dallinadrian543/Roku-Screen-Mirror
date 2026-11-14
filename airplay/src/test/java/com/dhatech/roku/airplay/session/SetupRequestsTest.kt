@@ -1,5 +1,6 @@
 package com.dhatech.roku.airplay.session
 
+import com.dhatech.roku.airplay.pairing.PairingProtocol
 import com.dhatech.roku.airplay.plist.BinaryPlistReader
 import com.dhatech.roku.airplay.plist.asArray
 import com.dhatech.roku.airplay.plist.asBool
@@ -9,6 +10,9 @@ import com.dhatech.roku.airplay.plist.asDouble
 import com.dhatech.roku.airplay.plist.asInt
 import com.dhatech.roku.airplay.plist.asLong
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -119,5 +123,61 @@ class SetupRequestsTest {
         assertEquals(72, body?.get("ekey")?.asData()?.size)
         assertEquals(4000, body?.get("timingPort")?.asInt())
         assertEquals(true, body?.get("isScreenMirroringSession")?.asBool())
+    }
+
+    @Test
+    fun `modern video setup omits shk and shiv when null`() {
+        val body = BinaryPlistReader.read(
+            ModernSetupRequests.modernVideoSetup(
+                streamConnectionId = 11L,
+                shk = null,
+                shiv = null,
+                uri = "rtsp://192.168.1.50:7000/11",
+            ).body!!,
+        ).asDict()
+
+        val stream = body?.get("streams").asArray()?.first().asDict()
+        assertEquals(110L, stream?.get("type")?.asLong())
+        assertEquals(11L, stream?.get("streamConnectionID")?.asLong())
+        assertNull(stream?.get("shk"))
+        assertNull(stream?.get("shiv"))
+    }
+
+    @Test
+    fun `fairplay skip and modern session routing handle 404 after HAP pairing`() {
+        assertTrue(MirrorSession.shouldSkipFairPlay(404, allowSkip = true))
+        assertTrue(MirrorSession.shouldSkipFairPlay(405, allowSkip = true))
+        assertTrue(MirrorSession.shouldSkipFairPlay(501, allowSkip = true))
+        assertFalse(MirrorSession.shouldSkipFairPlay(403, allowSkip = true))
+        assertFalse(MirrorSession.shouldSkipFairPlay(404, allowSkip = false))
+
+        assertTrue(
+            MirrorSession.shouldUseModernSession(
+                hasEncryptedControl = true,
+                protocol = PairingProtocol.HAP_SCREEN_CAPTURE,
+                fairPlaySupported = false,
+            ),
+        )
+        assertTrue(
+            MirrorSession.shouldUseModernSession(
+                hasEncryptedControl = true,
+                protocol = PairingProtocol.HAP_LEGACY,
+                fairPlaySupported = false,
+            ),
+        )
+        assertFalse(
+            MirrorSession.shouldUseModernSession(
+                hasEncryptedControl = true,
+                protocol = PairingProtocol.HAP_LEGACY,
+                fairPlaySupported = true,
+            ),
+        )
+        assertFalse(
+            MirrorSession.shouldUseModernSession(
+                hasEncryptedControl = false,
+                protocol = null,
+                fairPlaySupported = true,
+            ),
+        )
     }
 }
