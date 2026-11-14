@@ -4,10 +4,10 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
-import com.dhatech.roku.cast.R
 import com.dhatech.roku.airplay.discovery.ReceiverDiscovery
 import com.dhatech.roku.airplay.session.CredentialStore
 import com.dhatech.roku.audio.AudioRoutingController
+import com.dhatech.roku.cast.R
 import com.dhatech.roku.data.DataStoreCredentialStore
 import com.dhatech.roku.settings.SettingsRepository
 import kotlinx.coroutines.CoroutineScope

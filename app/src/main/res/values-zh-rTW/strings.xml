@@ -92,4 +92,6 @@
     <string name="error_password_required">密碼被拒絕</string>
     <string name="error_mdns_failed">mDNS 啟動失敗</string>
     <string name="error_pairing_throttled">接收端因多次失敗進入限流。請關閉再開啟其 AirPlay 接收功能（或等約 30 分鐘）後重試。</string>
+    <string name="manual_port_auto_chip">自動選擇 AirPlay 連接埠</string>
+    <string name="manual_port_auto_summary">自動偵測 7000、7100、5000、49152 與 7001 連接埠</string>
 </resources>

@@ -31,6 +31,8 @@
     <string name="manual_ip_body">Enter the receiver\'s local IP address shown in your Roku network settings.</string>
     <string name="manual_ip_hint">IP address (e.g. 192.168.1.45)</string>
     <string name="manual_port_hint">Port (default 7000)</string>
+    <string name="manual_port_auto_chip">Auto-select AirPlay port</string>
+    <string name="manual_port_auto_summary">Automatically checks ports 7000, 7100, 5000, 49152, and 7001</string>
     <string name="manual_ip_connect">Connect</string>
 
     <string name="receiver_actions_title">What would you like to cast?</string>

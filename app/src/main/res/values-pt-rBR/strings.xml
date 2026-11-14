@@ -92,4 +92,6 @@
     <string name="error_password_required">A senha foi rejeitada</string>
     <string name="error_mdns_failed">Falha ao iniciar a descoberta mDNS</string>
     <string name="error_pairing_throttled">O receptor está limitando as tentativas de pareamento após falhas. Desligue e ligue o receptor AirPlay dele (ou aguarde cerca de 30 minutos) e tente novamente.</string>
+    <string name="manual_port_auto_chip">Selecionar porta AirPlay automaticamente</string>
+    <string name="manual_port_auto_summary">Verifica automaticamente as portas 7000, 7100, 5000, 49152 e 7001</string>
 </resources>

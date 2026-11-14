@@ -59,11 +59,11 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.dhatech.roku.cast.R
 import com.dhatech.roku.airplay.discovery.AirPlayReceiver
 import com.dhatech.roku.airplay.session.SessionState
 import com.dhatech.roku.airplay.session.activeReceiver
 import com.dhatech.roku.audio.AudioRoutingState
+import com.dhatech.roku.cast.R
 import com.dhatech.roku.settings.MirrorSettings
 import com.dhatech.roku.settings.ThemeMode
 import com.dhatech.roku.ui.components.AudioRoutingActions
@@ -81,7 +81,7 @@ data class DiscoveryActions(
     val onRetry: (AirPlayReceiver) -> Unit,
     val onDismissError: () -> Unit,
     val onRefreshDiscovery: () -> Unit,
-    val onConnectManualIp: (host: String, port: Int, onDone: () -> Unit) -> Unit,
+    val onConnectManualIp: (host: String, port: Int?, onDone: () -> Unit) -> Unit,
     val onClearManualError: () -> Unit,
     val onToggleVideoCallMode: () -> Unit,
     val onToggleMixMic: (Boolean) -> Unit,

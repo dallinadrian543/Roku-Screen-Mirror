@@ -42,8 +42,8 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import com.dhatech.roku.cast.R
 import com.dhatech.roku.audio.AudioRoutingState
+import com.dhatech.roku.cast.R
 import com.dhatech.roku.settings.BitrateControlMode
 import com.dhatech.roku.settings.FrameRate
 import com.dhatech.roku.settings.MirrorSettings

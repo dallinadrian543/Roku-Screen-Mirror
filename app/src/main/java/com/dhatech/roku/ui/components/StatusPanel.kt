@@ -39,9 +39,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.dhatech.roku.cast.R
 import com.dhatech.roku.airplay.discovery.AirPlayReceiver
 import com.dhatech.roku.airplay.session.SessionState
+import com.dhatech.roku.cast.R
 
 @Composable
 fun StatusPanel(

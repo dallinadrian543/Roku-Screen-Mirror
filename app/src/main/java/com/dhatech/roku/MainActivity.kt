@@ -30,9 +30,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
-import com.dhatech.roku.cast.R
 import com.dhatech.roku.airplay.discovery.AirPlayReceiver
 import com.dhatech.roku.airplay.session.SessionState
+import com.dhatech.roku.cast.R
 import com.dhatech.roku.service.MirrorController
 import com.dhatech.roku.service.MirrorService
 import com.dhatech.roku.service.startCast
@@ -79,7 +79,11 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { /* Discovery and notifications degrade rather than fail; no action needed. */ }
+    ) { results ->
+        if (results.values.any { it }) {
+            viewModel.refreshDiscovery()
+        }
+    }
 
     @Suppress("LongMethod")
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -92,4 +92,6 @@
     <string name="error_password_required">비밀번호가 거부되었습니다</string>
     <string name="error_mdns_failed">mDNS 시작 실패</string>
     <string name="error_pairing_throttled">반복 실패로 수신기가 페어링을 제한 중입니다. 수신기의 AirPlay 수신을 껐다 켜거나 약 30분 후에 다시 시도하세요.</string>
+    <string name="manual_port_auto_chip">AirPlay 포트 자동 선택</string>
+    <string name="manual_port_auto_summary">7000, 7100, 5000, 49152, 7001 포트를 자동으로 확인합니다</string>
 </resources>

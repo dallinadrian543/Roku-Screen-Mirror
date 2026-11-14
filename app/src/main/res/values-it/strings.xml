@@ -92,4 +92,6 @@
     <string name="error_password_required">La password è stata rifiutata</string>
     <string name="error_mdns_failed">Avvio del rilevamento mDNS non riuscito</string>
     <string name="error_pairing_throttled">Il ricevente sta limitando i tentativi di abbinamento dopo errori. Spegni e riaccendi il suo ricevitore AirPlay (o attendi circa 30 minuti) e riprova.</string>
+    <string name="manual_port_auto_chip">Selezione automatica porta AirPlay</string>
+    <string name="manual_port_auto_summary">Controlla automaticamente le porte 7000, 7100, 5000, 49152 e 7001</string>
 </resources>

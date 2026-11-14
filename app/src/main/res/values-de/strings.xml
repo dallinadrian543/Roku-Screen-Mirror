@@ -92,4 +92,6 @@
     <string name="error_password_required">Passwort wurde abgelehnt</string>
     <string name="error_mdns_failed">mDNS-Ermittlung konnte nicht gestartet werden</string>
     <string name="error_pairing_throttled">Der Empfänger drosselt Kopplungsversuche nach Fehlern. Schalte den AirPlay-Empfang aus und wieder ein (oder warte ca. 30 Minuten) und versuche es erneut.</string>
+    <string name="manual_port_auto_chip">AirPlay-Port automatisch wählen</string>
+    <string name="manual_port_auto_summary">Prüft automatisch die Ports 7000, 7100, 5000, 49152 und 7001</string>
 </resources>

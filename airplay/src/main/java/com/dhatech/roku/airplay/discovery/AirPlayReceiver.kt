@@ -56,19 +56,29 @@ data class AirPlayReceiver(
      * receiver. Metadata from the mirroring side wins; the audio-only flag
      * survives only when BOTH sides are audio-only.
      */
-    fun mergedWith(other: AirPlayReceiver): AirPlayReceiver = copy(
-        name = if (isAudioOnly && !other.isAudioOnly) other.name else name,
-        deviceId = deviceId ?: other.deviceId,
-        model = model ?: other.model,
-        sourceVersion = sourceVersion ?: other.sourceVersion,
-        publicIdentifier = publicIdentifier ?: other.publicIdentifier,
-        publicKeyHex = publicKeyHex ?: other.publicKeyHex,
-        features = FeatureFlags(features.raw or other.features.raw),
-        isAudioOnly = isAudioOnly && other.isAudioOnly,
-        hasAudioOnlyService = hasAudioOnlyService || other.isAudioOnly || other.hasAudioOnlyService,
-        txtRecords = if (txtRecords.size >= other.txtRecords.size) txtRecords else other.txtRecords,
-        discoverySource = if (discoverySource == DiscoverySource.MDNS) discoverySource else other.discoverySource,
-    )
+    fun mergedWith(other: AirPlayReceiver): AirPlayReceiver {
+        val preferOther = isAudioOnly && !other.isAudioOnly
+        val primary = if (preferOther) other else this
+        val secondary = if (preferOther) this else other
+        return primary.copy(
+            deviceId = primary.deviceId ?: secondary.deviceId,
+            model = primary.model ?: secondary.model,
+            sourceVersion = primary.sourceVersion ?: secondary.sourceVersion,
+            publicIdentifier = primary.publicIdentifier ?: secondary.publicIdentifier,
+            publicKeyHex = primary.publicKeyHex ?: secondary.publicKeyHex,
+            features = FeatureFlags(features.raw or other.features.raw),
+            isAudioOnly = isAudioOnly && other.isAudioOnly,
+            hasAudioOnlyService = hasAudioOnlyService || other.isAudioOnly || other.hasAudioOnlyService,
+            txtRecords = if (txtRecords.size >= other.txtRecords.size) txtRecords else other.txtRecords,
+            discoverySource = mergedDiscoverySource(other),
+        )
+    }
+
+    private fun mergedDiscoverySource(other: AirPlayReceiver): DiscoverySource = when {
+        !isAudioOnly && other.isAudioOnly -> discoverySource
+        isAudioOnly && !other.isAudioOnly -> other.discoverySource
+        else -> minOf(discoverySource, other.discoverySource)
+    }
 
     /**
      * `pw` TXT key, or the password bit (0x4) of `sf`: the receiver wants an
@@ -96,6 +106,9 @@ data class AirPlayReceiver(
 
 enum class DiscoverySource {
     MDNS,
+    NSD,
+    SSDP_ECP,
+    LAN_SCAN,
     BLE,
     SAVED_PROBE,
     MANUAL_IP,

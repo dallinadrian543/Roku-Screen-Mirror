@@ -33,10 +33,10 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
-import com.dhatech.roku.cast.R
 import com.dhatech.roku.airplay.discovery.AirPlayReceiver
 import com.dhatech.roku.airplay.session.SessionState
 import com.dhatech.roku.airplay.session.activeReceiver
+import com.dhatech.roku.cast.R
 import com.dhatech.roku.service.MirrorController
 import com.dhatech.roku.service.startCast
 import com.dhatech.roku.settings.MirrorSettings

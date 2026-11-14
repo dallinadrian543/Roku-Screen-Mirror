@@ -92,4 +92,6 @@
     <string name="error_password_required">パスワードが拒否されました</string>
     <string name="error_mdns_failed">mDNS の起動に失敗しました</string>
     <string name="error_pairing_throttled">失敗が続いたため、受信側がペアリングを制限しています。受信側のAirPlayレシーバーをオフ/オンするか、約30分待ってから再試行してください。</string>
+    <string name="manual_port_auto_chip">AirPlay ポートを自動選択</string>
+    <string name="manual_port_auto_summary">7000、7100、5000、49152、7001 ポートを自動確認します</string>
 </resources>

@@ -24,7 +24,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
-import com.dhatech.roku.cast.R
 import com.dhatech.roku.KiteApplication
 import com.dhatech.roku.MainActivity
 import com.dhatech.roku.airplay.discovery.AirPlayReceiver
@@ -46,6 +45,7 @@ import com.dhatech.roku.capture.AudioFrameSource
 import com.dhatech.roku.capture.AudioPcmSource
 import com.dhatech.roku.capture.ScreenEncoder
 import com.dhatech.roku.capture.VideoFormat
+import com.dhatech.roku.cast.R
 import com.dhatech.roku.settings.BitrateControlMode
 import com.dhatech.roku.settings.MirrorSettings
 import kotlinx.coroutines.CancellationException

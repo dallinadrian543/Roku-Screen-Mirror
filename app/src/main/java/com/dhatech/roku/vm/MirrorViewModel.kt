@@ -3,11 +3,11 @@ package com.dhatech.roku.vm
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.dhatech.roku.cast.R
 import com.dhatech.roku.KiteApplication
 import com.dhatech.roku.airplay.discovery.AirPlayReceiver
 import com.dhatech.roku.airplay.session.SessionState
 import com.dhatech.roku.audio.AudioRoutingState
+import com.dhatech.roku.cast.R
 import com.dhatech.roku.service.MirrorController
 import com.dhatech.roku.settings.MirrorSettings
 import com.dhatech.roku.settings.ThemeMode
@@ -100,7 +100,7 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
         app.audioRouting.refresh()
     }
 
-    fun addManualReceiver(host: String, port: Int, onFound: (AirPlayReceiver) -> Unit) {
+    fun addManualReceiver(host: String, port: Int?, onFound: (AirPlayReceiver) -> Unit) {
         viewModelScope.launch {
             _manualConnectBusy.value = true
             _manualConnectError.value = null

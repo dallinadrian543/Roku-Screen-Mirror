@@ -6,8 +6,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -23,21 +27,25 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.dhatech.roku.airplay.discovery.ReceiverDiscovery
 import com.dhatech.roku.cast.R
 
 @Composable
 fun ManualIpDialog(
     busy: Boolean,
     error: String?,
-    onConnect: (host: String, port: Int) -> Unit,
+    onConnect: (host: String, port: Int?) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var host by remember { mutableStateOf("") }
+    var autoSelectPort by remember { mutableStateOf(true) }
     var portText by remember { mutableStateOf(DEFAULT_AIRPLAY_PORT.toString()) }
 
-    val trimmedHost = host.trim()
-    val parsedPort = portText.trim().toIntOrNull()
-    val canSubmit = !busy && trimmedHost.isNotEmpty() && parsedPort != null && parsedPort in 1..MAX_PORT
+    val (cleanHost, inlinePort) = ReceiverDiscovery.splitHostAndPort(host)
+    val parsedPort = inlinePort ?: portText.trim().toIntOrNull()
+    val effectiveAuto = autoSelectPort && inlinePort == null
+    val validPort = parsedPort != null && parsedPort in 1..MAX_PORT
+    val canSubmit = !busy && cleanHost.isNotEmpty() && (effectiveAuto || validPort)
 
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
@@ -59,17 +67,47 @@ fun ManualIpDialog(
                         .fillMaxWidth()
                         .testTag("manual_ip_host_input"),
                 )
-                OutlinedTextField(
-                    value = portText,
-                    onValueChange = { portText = it.filter(Char::isDigit).take(5) },
-                    label = { Text(stringResource(R.string.manual_port_hint)) },
-                    singleLine = true,
-                    enabled = !busy,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("manual_ip_port_input"),
+                FilterChip(
+                    selected = effectiveAuto,
+                    enabled = !busy && inlinePort == null,
+                    onClick = { autoSelectPort = !autoSelectPort },
+                    label = { Text(stringResource(R.string.manual_port_auto_chip)) },
+                    leadingIcon = if (effectiveAuto) {
+                        {
+                            Icon(
+                                imageVector = Icons.Outlined.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    } else {
+                        null
+                    },
+                    modifier = Modifier.testTag("manual_ip_auto_port_chip"),
                 )
+                if (effectiveAuto) {
+                    Text(
+                        text = stringResource(R.string.manual_port_auto_summary),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = inlinePort?.toString() ?: portText,
+                        onValueChange = {
+                            if (inlinePort == null) {
+                                portText = it.filter(Char::isDigit).take(5)
+                            }
+                        },
+                        label = { Text(stringResource(R.string.manual_port_hint)) },
+                        singleLine = true,
+                        enabled = !busy && inlinePort == null,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("manual_ip_port_input"),
+                    )
+                }
                 if (error != null) {
                     Text(
                         text = error,
@@ -94,7 +132,7 @@ fun ManualIpDialog(
         confirmButton = {
             TextButton(
                 enabled = canSubmit,
-                onClick = { parsedPort?.let { onConnect(trimmedHost, it) } },
+                onClick = { onConnect(cleanHost, if (effectiveAuto) null else parsedPort) },
                 modifier = Modifier.testTag("manual_ip_connect_button"),
             ) {
                 Text(stringResource(R.string.manual_ip_connect))

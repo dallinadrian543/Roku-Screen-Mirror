@@ -8,9 +8,9 @@ import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.util.Log
-import com.dhatech.roku.cast.R
 import com.dhatech.roku.TilePickerActivity
 import com.dhatech.roku.airplay.session.activeReceiver
+import com.dhatech.roku.cast.R
 
 /**
  * The Quick Settings tile: pull down the shade, tap "Screen cast".

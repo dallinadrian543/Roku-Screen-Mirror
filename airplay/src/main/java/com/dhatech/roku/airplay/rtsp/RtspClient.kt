@@ -75,19 +75,20 @@ class RtspClient(
     val isConnected: Boolean
         get() = socket?.isConnected == true && socket?.isClosed == false
 
-    suspend fun connect(timeoutMs: Int = CONNECT_TIMEOUT_MS) = withContext(Dispatchers.IO) {
-        lock.withLock {
-            check(socket == null) { "Already connected" }
-            val s = Socket()
-            s.tcpNoDelay = true // Control messages are small and latency-sensitive.
-            s.soTimeout = READ_TIMEOUT_MS
-            s.connect(InetSocketAddress(address, port), timeoutMs)
-            socket = s
-            rawInput = BufferedInputStream(s.getInputStream())
-            rawOutput = BufferedOutputStream(s.getOutputStream())
-            Log.i(TAG, "Connected to ${address.hostAddress}:$port from ${s.localAddress?.hostAddress}")
+    suspend fun connect(timeoutMs: Int = CONNECT_TIMEOUT_MS, readTimeoutMs: Int = READ_TIMEOUT_MS) =
+        withContext(Dispatchers.IO) {
+            lock.withLock {
+                check(socket == null) { "Already connected" }
+                val s = Socket()
+                s.tcpNoDelay = true // Control messages are small and latency-sensitive.
+                s.soTimeout = readTimeoutMs
+                s.connect(InetSocketAddress(address, port), timeoutMs)
+                socket = s
+                rawInput = BufferedInputStream(s.getInputStream())
+                rawOutput = BufferedOutputStream(s.getOutputStream())
+                Log.i(TAG, "Connected to ${address.hostAddress}:$port from ${s.localAddress?.hostAddress}")
+            }
         }
-    }
 
     /**
      * Turns on the ChaCha20-Poly1305 layer. Call immediately after pair-verify M4

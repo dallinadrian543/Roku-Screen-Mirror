@@ -92,4 +92,6 @@
     <string name="error_password_required">Le mot de passe a été refusé</string>
     <string name="error_mdns_failed">Échec du démarrage de la découverte mDNS</string>
     <string name="error_pairing_throttled">Le récepteur limite les tentatives de jumelage après des échecs. Désactivez puis réactivez son récepteur AirPlay (ou attendez environ 30 minutes), puis réessayez.</string>
+    <string name="manual_port_auto_chip">Sélection auto du port AirPlay</string>
+    <string name="manual_port_auto_summary">Vérifie automatiquement les ports 7000, 7100, 5000, 49152 et 7001</string>
 </resources>

@@ -42,10 +42,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.dhatech.roku.cast.R
 import com.dhatech.roku.airplay.discovery.AirPlayReceiver
 import com.dhatech.roku.airplay.discovery.DiscoverySource
 import com.dhatech.roku.airplay.discovery.PairingPath
+import com.dhatech.roku.cast.R
 
 /**
  * One receiver in the discovery list.
