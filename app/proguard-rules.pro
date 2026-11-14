@@ -28,8 +28,12 @@
 -dontwarn javax.jmdns.**
 -dontwarn org.slf4j.**
 
-# BouncyCastle cryptographic algorithms and providers (ChaCha20-Poly1305, X25519, Ed25519)
--keep class org.bouncycastle.crypto.** { *; }
--keep class org.bouncycastle.jcajce.provider.** { *; }
--keep class org.bouncycastle.jce.provider.** { *; }
+# BouncyCastle lightweight crypto primitives used by AirPlay (ChaCha20-Poly1305, Poly1305, X25519, Ed25519)
+-keep class org.bouncycastle.crypto.modes.ChaCha20Poly1305 { *; }
+-keep class org.bouncycastle.crypto.macs.Poly1305 { *; }
+-keep class org.bouncycastle.crypto.agreement.X25519Agreement { *; }
+-keep class org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator { *; }
+-keep class org.bouncycastle.crypto.generators.X25519KeyPairGenerator { *; }
+-keep class org.bouncycastle.crypto.signers.Ed25519Signer { *; }
+-keep class org.bouncycastle.crypto.params.** { *; }
 -dontwarn org.bouncycastle.**

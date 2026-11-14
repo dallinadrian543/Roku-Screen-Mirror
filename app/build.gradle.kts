@@ -103,6 +103,18 @@ android {
             freeCompilerArgs.add("-opt-in=androidx.compose.material3.ExperimentalMaterial3ExpressiveApi")
         }
     }
+
+    lint {
+        abortOnError = true
+        warningsAsErrors = true
+        checkReleaseBuilds = true
+        disable += setOf(
+            "AndroidGradlePluginVersion",
+            "GradleDependency",
+            "NewerVersionAvailable",
+        )
+        baseline = file("lint-baseline.xml")
+    }
 }
 
 dependencies {

@@ -1,0 +1,900 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<issues format="6" by="lint 9.1.1" type="baseline" client="gradle" dependencies="false" name="AGP (9.1.1)" variant="all" version="9.1.1">
+
+    <issue
+        id="BatteryLife"
+        message="Use of `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` violates the Play Store Content Policy regarding acceptable use cases, as described in https://developer.android.com/training/monitoring-device-state/doze-standby.html"
+        errorLine1="            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,"
+        errorLine2="                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/dhatech/roku/SettingsActivity.kt"
+            line="142"
+            column="22"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;receiver_roku&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;receiver_roku&quot;>Roku AirPlay&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="12"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;receiver_source_manual&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;receiver_source_manual&quot;>Direct IP&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="15"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;receiver_source_saved&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;receiver_source_saved&quot;>Fast connect&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="16"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;action_refresh&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;action_refresh&quot;>Refresh devices&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="26"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;action_manual_ip&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;action_manual_ip&quot;>Connect by IP&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="27"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;action_theme_toggle&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;action_theme_toggle&quot;>Switch theme&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="28"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;manual_ip_title&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;manual_ip_title&quot;>Connect to Roku / AirPlay by IP&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="30"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;manual_ip_body&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;manual_ip_body&quot;>Enter the receiver\&apos;s local IP address shown in your Roku network settings.&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="31"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;manual_ip_hint&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;manual_ip_hint&quot;>IP address (e.g. 192.168.1.45)&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="32"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;manual_port_hint&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;manual_port_hint&quot;>Port (default 7000)&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="33"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;manual_ip_connect&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;manual_ip_connect&quot;>Connect&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="34"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;state_reconnecting&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;state_reconnecting&quot;>Reconnecting&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="58"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;state_reconnecting_progress&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;state_reconnecting_progress&quot;>Attempt %1$d of %2$d&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="59"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;error_dismiss&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;error_dismiss&quot;>Dismiss&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="67"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;mic_silenced_notice&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;mic_silenced_notice&quot;>Active video call holds exclusive microphone priority; playback audio continues casting.&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="69"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;call_mode_chip&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;call_mode_chip&quot;>Video Call Mode&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="71"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;audio_routing_chip&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;audio_routing_chip&quot;>Audio &amp;amp; Mic&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="72"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;audio_routing_title&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;audio_routing_title&quot;>Audio &amp;amp; Microphone Routing&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="73"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;audio_routing_subtitle&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;audio_routing_subtitle&quot;>Pick input/output devices here or via Android Settings. Changes apply immediately.&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="74"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;audio_routing_mic_label&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;audio_routing_mic_label&quot;>Microphone source&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="75"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;audio_routing_output_label&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;audio_routing_output_label&quot;>Audio output device&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="76"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;audio_routing_system_default&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;audio_routing_system_default&quot;>Android system default&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="77"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;audio_routing_mix_mic&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;audio_routing_mix_mic&quot;>Mix my mic into TV audio&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="78"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;audio_routing_mix_mic_summary&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;audio_routing_mix_mic_summary&quot;>Combines your microphone with call audio on the TV when permitted by the call app.&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="79"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;audio_routing_android_sound&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;audio_routing_android_sound&quot;>Android Sound Settings&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="80"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;audio_routing_bluetooth_settings&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;audio_routing_bluetooth_settings&quot;>Bluetooth Devices&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="81"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;audio_routing_active_device&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;audio_routing_active_device&quot;>Active output: %1$s&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="82"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_section_appearance&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_section_appearance&quot;>Appearance&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="97"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_theme&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_theme&quot;>App theme&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="98"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;theme_dark&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;theme_dark&quot;>Dark mode&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="99"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;theme_light&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;theme_light&quot;>Light mode&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="100"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;theme_system&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;theme_system&quot;>Follow system&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="101"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_bitrate_mode&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_bitrate_mode&quot;>Bitrate control mode&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="109"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;bitrate_mode_auto&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;bitrate_mode_auto&quot;>Auto Adaptive&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="110"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;bitrate_mode_vbr&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;bitrate_mode_vbr&quot;>Variable (VBR)&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="111"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;bitrate_mode_cbr&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;bitrate_mode_cbr&quot;>Constant (CBR)&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="112"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;bitrate_mode_cq&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;bitrate_mode_cq&quot;>Constant Quality (CQ)&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="113"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_keyframe_interval&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_keyframe_interval&quot;>Keyframe interval&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="114"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_keyframe_value&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_keyframe_value&quot;>%1$d sec&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="115"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_section_connection&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_section_connection&quot;>Connection &amp;amp; Latency&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="117"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_low_latency&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_low_latency&quot;>Low-latency streaming&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="118"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_low_latency_summary&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_low_latency_summary&quot;>Uses 35 ms playout buffer, DSCP low-delay routing, and low-latency hardware encoder hints&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="119"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_auto_reconnect&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_auto_reconnect&quot;>Auto-reconnect&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="120"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_auto_reconnect_summary&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_auto_reconnect_summary&quot;>Automatically retries up to 3 times if Wi-Fi drops briefly&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="121"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_section_drm_calls&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_section_drm_calls&quot;>DRM &amp;amp; Video Calls&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="123"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_drm_compat&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_drm_compat&quot;>DRM compatibility mode&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="124"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_drm_compat_summary&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_drm_compat_summary&quot;>Configures SDR BT.709 color &amp;amp; full-display capture for streaming apps (hardware-protected Widevine L1/FLAG_SECURE streams remain protected by Android)&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="125"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_video_call_mode&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_video_call_mode&quot;>Video call mode (Meet, Zoom)&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="126"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="MissingTranslation"
+        message="&quot;settings_video_call_mode_summary&quot; is not translated in &quot;de&quot; (German), &quot;ru&quot; (Russian), &quot;ko&quot; (Korean), &quot;pt&quot; (Portuguese), &quot;ja&quot; (Japanese), &quot;it&quot; (Italian), &quot;fr&quot; (French), &quot;es&quot; (Spanish), &quot;zh&quot; (Chinese)"
+        errorLine1="    &lt;string name=&quot;settings_video_call_mode_summary&quot;>Enables call audio routing controls and optional microphone mixing&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="127"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="Untranslatable"
+        message="The resource string &quot;quality_1080p&quot; has been marked as translatable=&quot;false&quot; elsewhere (usually in the `values` folder), but is translated to &quot;zh&quot; (Chinese) here"
+        errorLine1="    &lt;string name=&quot;quality_1080p&quot;>1080p&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values-zh-rCN/strings.xml"
+            line="33"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="Untranslatable"
+        message="The resource string &quot;quality_720p&quot; has been marked as translatable=&quot;false&quot; elsewhere (usually in the `values` folder), but is translated to &quot;zh&quot; (Chinese) here"
+        errorLine1="    &lt;string name=&quot;quality_720p&quot;>720p&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values-zh-rCN/strings.xml"
+            line="34"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="Untranslatable"
+        message="The resource string &quot;quality_540p&quot; has been marked as translatable=&quot;false&quot; elsewhere (usually in the `values` folder), but is translated to &quot;zh&quot; (Chinese) here"
+        errorLine1="    &lt;string name=&quot;quality_540p&quot;>540p&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values-zh-rCN/strings.xml"
+            line="35"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="Untranslatable"
+        message="The resource string &quot;mirroring_rate_kbps&quot; has been marked as translatable=&quot;false&quot; elsewhere (usually in the `values` folder), but is translated to &quot;zh&quot; (Chinese) here"
+        errorLine1="    &lt;string name=&quot;mirroring_rate_kbps&quot;>%1$d kbps&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values-zh-rCN/strings.xml"
+            line="42"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="Untranslatable"
+        message="The resource string &quot;mirroring_rate_mbps&quot; has been marked as translatable=&quot;false&quot; elsewhere (usually in the `values` folder), but is translated to &quot;zh&quot; (Chinese) here"
+        errorLine1="    &lt;string name=&quot;mirroring_rate_mbps&quot;>%1$.1f Mbps&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values-zh-rCN/strings.xml"
+            line="43"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="Untranslatable"
+        message="The resource string &quot;mirroring_resolution&quot; has been marked as translatable=&quot;false&quot; elsewhere (usually in the `values` folder), but is translated to &quot;zh&quot; (Chinese) here"
+        errorLine1="    &lt;string name=&quot;mirroring_resolution&quot;>%1$d × %2$d @ %3$d fps&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values-zh-rCN/strings.xml"
+            line="44"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="Untranslatable"
+        message="The resource string &quot;settings_bit_rate_value&quot; has been marked as translatable=&quot;false&quot; elsewhere (usually in the `values` folder), but is translated to &quot;zh&quot; (Chinese) here"
+        errorLine1="    &lt;string name=&quot;settings_bit_rate_value&quot;>%1$d Mbps&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values-zh-rCN/strings.xml"
+            line="69"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="PluralsCandidate"
+        message="Formatting %d followed by words (&quot;sec&quot;): This should probably be a plural rather than a string"
+        errorLine1="    &lt;string name=&quot;settings_keyframe_value&quot;>%1$d sec&lt;/string>"
+        errorLine2="    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="115"
+            column="5"/>
+    </issue>
+
+    <issue
+        id="ChromeOsAbiSupport"
+        message="Missing x86_64 ABI support for ChromeOS"
+        errorLine1="            abiFilters += listOf(&quot;armeabi-v7a&quot;, &quot;arm64-v8a&quot;)"
+        errorLine2="                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="21"
+            column="27"/>
+    </issue>
+
+    <issue
+        id="DataExtractionRules"
+        message="The attribute `android:allowBackup` is deprecated from Android 12 and may be removed in future versions. Consider adding the attribute `android:dataExtractionRules` specifying an `@xml` resource which configures backups and device transfers on Android 12 and higher."
+        errorLine1="        android:allowBackup=&quot;false&quot;"
+        errorLine2="                             ~~~~~">
+        <location
+            file="src/main/AndroidManifest.xml"
+            line="57"
+            column="30"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="Unnecessary; `SDK_INT` is always >= 33"
+        errorLine1="        tools:targetApi=&quot;33&quot; />"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/AndroidManifest.xml"
+            line="15"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="Unnecessary; `SDK_INT` is always >= 31"
+        errorLine1="        tools:targetApi=&quot;31&quot; />"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/AndroidManifest.xml"
+            line="27"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="Unnecessary; `SDK_INT` is never &lt; 33"
+        errorLine1="        if (Build.VERSION.SDK_INT &lt; Build.VERSION_CODES.O) return"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/dhatech/roku/KiteApplication.kt"
+            line="51"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="Unnecessary; `SDK_INT` is always >= 33"
+        errorLine1="        val resultData: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {"
+        errorLine2="                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/dhatech/roku/service/MirrorService.kt"
+            line="116"
+            column="39"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="Unnecessary; `SDK_INT` is always >= 33"
+        errorLine1="                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &amp;&amp;"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/dhatech/roku/service/MirrorService.kt"
+            line="226"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="Unnecessary; `SDK_INT` is always >= 33"
+        errorLine1="        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/dhatech/roku/service/MirrorService.kt"
+            line="803"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="Unnecessary; `SDK_INT` is always >= 33"
+        errorLine1="        dynamicColor &amp;&amp; Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->"
+        errorLine2="                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/dhatech/roku/ui/theme/Theme.kt"
+            line="87"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="This folder configuration (`v26`) is unnecessary; `minSdkVersion` is 33. Merge all the resources in this folder into `mipmap-anydpi`.">
+        <location
+            file="src/main/res/mipmap-anydpi-v26"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.color.ic_launcher_background` appears to be unused"
+        errorLine1="    &lt;color name=&quot;ic_launcher_background&quot;>#4B1D7E&lt;/color>"
+        errorLine2="           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/colors.xml"
+            line="3"
+            column="12"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.string.action_start` appears to be unused"
+        errorLine1="    &lt;string name=&quot;action_start&quot;>Start casting&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="18"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.string.receiver_actions_title` appears to be unused"
+        errorLine1="    &lt;string name=&quot;receiver_actions_title&quot;>What would you like to cast?&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="36"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.string.permission_notification_rationale` appears to be unused"
+        errorLine1="    &lt;string name=&quot;permission_notification_rationale&quot;>Notification permission is needed to show casting status.&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="90"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.string.permission_nearby_rationale` appears to be unused"
+        errorLine1="    &lt;string name=&quot;permission_nearby_rationale&quot;>Android 13 and later require the nearby devices permission to find devices on the local network.&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="91"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.string.error_audio_interrupted` appears to be unused"
+        errorLine1="    &lt;string name=&quot;error_audio_interrupted&quot;>Audio casting was interrupted&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="158"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.string.error_cast_interrupted` appears to be unused"
+        errorLine1="    &lt;string name=&quot;error_cast_interrupted&quot;>Casting was interrupted&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="160"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.string.error_receiver_disconnected` appears to be unused"
+        errorLine1="    &lt;string name=&quot;error_receiver_disconnected&quot;>The receiver ended the session&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="161"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.string.error_password_required` appears to be unused"
+        errorLine1="    &lt;string name=&quot;error_password_required&quot;>Password was rejected&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="162"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icons should not fill every pixel of their square region; see the design guide for details">
+        <location
+            file="src/main/res/mipmap-hdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icons should not fill every pixel of their square region; see the design guide for details">
+        <location
+            file="src/main/res/mipmap-mdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icons should not fill every pixel of their square region; see the design guide for details">
+        <location
+            file="src/main/res/mipmap-xhdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icons should not fill every pixel of their square region; see the design guide for details">
+        <location
+            file="src/main/res/mipmap-xxhdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icons should not fill every pixel of their square region; see the design guide for details">
+        <location
+            file="src/main/res/mipmap-xxxhdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconLocation"
+        message="Found bitmap drawable `res/drawable/roku_cast_icon_fg_1794516958840.jpg` in densityless folder">
+        <location
+            file="src/main/res/drawable/roku_cast_icon_fg_1794516958840.jpg"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `String.toUri` instead?"
+        errorLine1="            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_URL)))"
+        errorLine2="                                                     ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/dhatech/roku/SettingsActivity.kt"
+            line="106"
+            column="54"/>
+    </issue>
+
+</issues>
