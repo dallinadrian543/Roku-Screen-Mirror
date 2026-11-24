@@ -43,6 +43,7 @@ import com.dhatech.roku.airplay.session.SessionState
 import com.dhatech.roku.capture.AlacAudioEncoder
 import com.dhatech.roku.capture.AudioFrameSource
 import com.dhatech.roku.capture.AudioPcmSource
+import com.dhatech.roku.capture.KeyFrameVideoBuffer
 import com.dhatech.roku.capture.ScreenEncoder
 import com.dhatech.roku.capture.VideoFormat
 import com.dhatech.roku.cast.R
@@ -52,12 +53,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.Closeable
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Foreground service running AirPlay screen & audio casting, adaptive bitrate
@@ -79,6 +84,8 @@ class MirrorService : Service() {
 
     @Volatile
     private var manualStopRequested: Boolean = false
+
+    private val cleanupLock = Any()
 
     private var encoder: ScreenEncoder? = null
     private var audioEncoder: AudioFrameSource? = null
@@ -449,10 +456,10 @@ class MirrorService : Service() {
         )
         session = mirrorSession
 
-        var connectionLostError: Throwable? = null
+        val connectionLostError = AtomicReference<Throwable?>(null)
         val streamingScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         mirrorSession.onConnectionLost = { error ->
-            connectionLostError = error
+            connectionLostError.compareAndSet(null, error)
             streamingScope.cancel()
         }
 
@@ -525,28 +532,13 @@ class MirrorService : Service() {
             )
 
             if (screenEncoder != null && stream != null) {
-                var sentConfig = false
-                screenEncoder.frames()
-                    .buffer(
-                        FRAME_BUFFER,
-                        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
-                    )
-                    .collect { frame ->
-                        if (frame.isCodecConfig) {
-                            val sets = NaluRepacker.parseParameterSets(frame.data) ?: return@collect
-                            stream.sendCodecConfig(sets, liveWidth, liveHeight, frame.presentationTimeUs)
-                            sentConfig = true
-                            return@collect
-                        }
-                        if (!sentConfig) return@collect
-                        stream.sendVideoFrame(frame.data, frame.presentationTimeUs)
-                    }
+                streamVideoFrames(screenEncoder, stream)
             } else {
                 streamingScope.launch { delay(Long.MAX_VALUE) }.join()
             }
-            connectionLostError?.let { throw it }
+            connectionLostError.get()?.let { throw it }
         } catch (e: CancellationException) {
-            val lost = connectionLostError
+            val lost = connectionLostError.get()
             if (lost != null) throw lost
             throw e
         } finally {
@@ -655,20 +647,40 @@ class MirrorService : Service() {
         )
     }
 
-    private suspend fun pumpAudio(encoder: AudioFrameSource, session: MirrorSession) {
-        session.modernAudio?.let { modern ->
-            val syncJob = scope.launch {
-                while (isActive) {
-                    delay(1_000)
-                    runCatching { modern.sendSyncPacket(false) }
-                }
-            }
+    private suspend fun streamVideoFrames(screenEncoder: ScreenEncoder, stream: MirrorStream) = coroutineScope {
+        val frameBuffer = KeyFrameVideoBuffer(FRAME_BUFFER) {
+            screenEncoder.requestKeyFrame()
+        }
+        val producer = launch(Dispatchers.Default) {
             try {
-                encoder.frames().collect { frame ->
-                    if (!frame.isCodecConfig) modern.sendDataFrame(frame.data)
+                screenEncoder.frames().collect { frame ->
+                    frameBuffer.offer(frame)
                 }
             } finally {
-                syncJob.cancel()
+                frameBuffer.close()
+            }
+        }
+        try {
+            var sentConfig = false
+            frameBuffer.consume { frame ->
+                if (frame.isCodecConfig) {
+                    val sets = NaluRepacker.parseParameterSets(frame.data) ?: return@consume
+                    stream.sendCodecConfig(sets, liveWidth, liveHeight, frame.presentationTimeUs)
+                    sentConfig = true
+                } else if (sentConfig) {
+                    stream.sendVideoFrame(frame.data, frame.presentationTimeUs)
+                }
+            }
+        } finally {
+            producer.cancel()
+            frameBuffer.close()
+        }
+    }
+
+    private suspend fun pumpAudio(encoder: AudioFrameSource, session: MirrorSession) {
+        session.modernAudio?.let { modern ->
+            encoder.frames().collect { frame ->
+                if (!frame.isCodecConfig) modern.sendDataFrame(frame.data)
             }
             return
         }
@@ -683,24 +695,36 @@ class MirrorService : Service() {
 
     private fun stopMirroring() {
         manualStopRequested = true
-        sessionJob?.cancel()
-        scope.launch(Dispatchers.IO) { cleanupAll() }
+        val runningJob = sessionJob
+        sessionJob = null
+        runningJob?.cancel()
         MirrorController.publishMicSilenced(false)
         MirrorController.publish(SessionState.Idle)
-        stopSelf()
+        scope.launch(Dispatchers.IO + NonCancellable) {
+            cleanupAll()
+            withContext(Dispatchers.Main) { stopSelf() }
+        }
     }
 
-    private fun cleanupAttemptResourcesOnly() {
-        runCatching { encoder?.close() }
-        runCatching { audioEncoder?.close() }
-        runCatching { session?.close() }
-        runCatching { raopSession?.close() }
-        runCatching { airPlay2Session?.close() }
+    private fun detachAttemptCloseablesLocked(): List<Closeable> {
+        val closeables = listOfNotNull<Closeable>(
+            encoder,
+            audioEncoder,
+            session,
+            raopSession,
+            airPlay2Session,
+        )
         encoder = null
         audioEncoder = null
         session = null
         raopSession = null
         airPlay2Session = null
+        return closeables
+    }
+
+    private fun cleanupAttemptResourcesOnly() {
+        val closeables = synchronized(cleanupLock) { detachAttemptCloseablesLocked() }
+        closeables.forEach { closeable -> runCatching { closeable.close() } }
     }
 
     private fun cleanupAllAndStop() {
@@ -708,15 +732,27 @@ class MirrorService : Service() {
         stopSelf()
     }
 
-    private fun cleanupAll() {
-        metricJob?.cancel()
-        metricJob = null
-        cleanupAttemptResourcesOnly()
-        projectionCallback?.let { cb -> runCatching { projection?.unregisterCallback(cb) } }
-        projectionCallback = null
-        runCatching { projection?.stop() }
-        projection = null
-        releaseWakeLock()
+    private fun cleanupAll(closeAsync: Boolean = false) {
+        val closeables = synchronized(cleanupLock) {
+            metricJob?.cancel()
+            metricJob = null
+            val list = detachAttemptCloseablesLocked()
+            projectionCallback?.let { cb -> runCatching { projection?.unregisterCallback(cb) } }
+            projectionCallback = null
+            runCatching { projection?.stop() }
+            projection = null
+            releaseWakeLock()
+            list
+        }
+        if (closeables.isNotEmpty()) {
+            if (closeAsync) {
+                Thread({
+                    closeables.forEach { c -> runCatching { c.close() } }
+                }, "kite-service-cleanup").apply { isDaemon = true }.start()
+            } else {
+                closeables.forEach { c -> runCatching { c.close() } }
+            }
+        }
         runCatching { (application as KiteApplication).audioRouting.restoreDefaultRouting() }
         runCatching {
             getSystemService(android.net.ConnectivityManager::class.java)
@@ -820,7 +856,7 @@ class MirrorService : Service() {
     private fun Intent.bitRateOverride(): Int? = getIntExtra(EXTRA_BIT_RATE, 0).takeIf { it > 0 }
 
     override fun onDestroy() {
-        cleanupAll()
+        cleanupAll(closeAsync = true)
         scope.cancel()
         MirrorController.onPublish = null
         super.onDestroy()

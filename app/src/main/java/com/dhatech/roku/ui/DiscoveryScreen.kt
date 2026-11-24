@@ -25,6 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AddLink
 import androidx.compose.material.icons.outlined.BrightnessAuto
+import androidx.compose.material.icons.outlined.Cast
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.Mic
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material.icons.outlined.VideoCall
 import androidx.compose.material.icons.outlined.WifiFind
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -45,6 +47,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
@@ -57,7 +60,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.dhatech.roku.airplay.discovery.AirPlayReceiver
 import com.dhatech.roku.airplay.session.SessionState
@@ -75,6 +80,7 @@ import com.dhatech.roku.vm.DiscoveryUiState
 
 @Suppress("LongParameterList")
 data class DiscoveryActions(
+    val onSelectReceiver: (AirPlayReceiver) -> Unit,
     val onStartMirroring: (AirPlayReceiver) -> Unit,
     val onReceiverLongPress: (AirPlayReceiver) -> Unit,
     val onStopMirroring: () -> Unit,
@@ -111,17 +117,18 @@ fun DiscoveryScreen(state: DiscoveryScreenState, actions: DiscoveryActions) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(appBarState)
     var showManualIpDialog by remember { mutableStateOf(false) }
     var showAudioSheet by remember { mutableStateOf(false) }
+    var showChooseDeviceDialog by remember { mutableStateOf(false) }
 
     val sessionState = state.sessionState
     val uiState = state.uiState
     val isBusy = sessionState !is SessionState.Idle && sessionState !is SessionState.Failed
 
-    val activeReceiverId = sessionState.activeReceiver?.stableId
+    val activeReceiverId = sessionState.activeReceiver?.endpointKey
     val orderedReceivers = remember(uiState.receivers, activeReceiverId) {
         if (activeReceiverId == null) {
             uiState.receivers
         } else {
-            uiState.receivers.sortedByDescending { it.stableId == activeReceiverId }
+            uiState.receivers.sortedByDescending { it.endpointKey == activeReceiverId }
         }
     }
 
@@ -181,6 +188,10 @@ fun DiscoveryScreen(state: DiscoveryScreenState, actions: DiscoveryActions) {
         bottomBar = {
             SessionControls(
                 sessionState = sessionState,
+                receivers = orderedReceivers,
+                selectedReceiver = uiState.selectedReceiver,
+                onStartCast = { target -> actions.onStartMirroring(target) },
+                onOpenDevicePicker = { showChooseDeviceDialog = true },
                 onStopMirroring = actions.onStopMirroring,
             )
         },
@@ -241,7 +252,9 @@ fun DiscoveryScreen(state: DiscoveryScreenState, actions: DiscoveryActions) {
                     receivers = orderedReceivers,
                     pairedIds = uiState.pairedIds,
                     enabled = !isBusy,
-                    onSelect = actions.onStartMirroring,
+                    selectedEndpointKey = uiState.selectedEndpointKey,
+                    onSelect = actions.onSelectReceiver,
+                    onCastClick = actions.onStartMirroring,
                     onLongPress = actions.onReceiverLongPress,
                 )
 
@@ -271,6 +284,18 @@ fun DiscoveryScreen(state: DiscoveryScreenState, actions: DiscoveryActions) {
                 }
             },
             onDismiss = { showManualIpDialog = false },
+        )
+    }
+
+    if (showChooseDeviceDialog) {
+        ChooseDeviceDialog(
+            receivers = orderedReceivers.filter { it.supportsMirroring || it.isAudioOnly },
+            onSelectAndCast = { receiver ->
+                showChooseDeviceDialog = false
+                actions.onSelectReceiver(receiver)
+                actions.onStartMirroring(receiver)
+            },
+            onDismiss = { showChooseDeviceDialog = false },
         )
     }
 
@@ -387,13 +412,75 @@ private fun EmptyState(isSearching: Boolean, error: String?, onConnectByIp: () -
 }
 
 @Composable
-private fun SessionControls(sessionState: SessionState, onStopMirroring: () -> Unit) {
+private fun ChooseDeviceDialog(
+    receivers: List<AirPlayReceiver>,
+    onSelectAndCast: (AirPlayReceiver) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.choose_device_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = stringResource(R.string.choose_device_subtitle),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                receivers.forEach { receiver ->
+                    TextButton(
+                        onClick = { onSelectAndCast(receiver) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("choose_device_option_${receiver.address.hostAddress}_${receiver.port}"),
+                    ) {
+                        Column(Modifier.fillMaxWidth()) {
+                            Text(
+                                text = receiver.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = "${receiver.displayModel} · ${receiver.endpointKey}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}
+
+@Suppress("LongParameterList")
+@Composable
+private fun SessionControls(
+    sessionState: SessionState,
+    receivers: List<AirPlayReceiver>,
+    selectedReceiver: AirPlayReceiver?,
+    onStartCast: (AirPlayReceiver) -> Unit,
+    onOpenDevicePicker: () -> Unit,
+    onStopMirroring: () -> Unit,
+) {
     val isActive = sessionState is SessionState.Mirroring ||
         sessionState is SessionState.StreamingAudio ||
         sessionState is SessionState.Reconnecting
+    val isIdleOrFailed = sessionState is SessionState.Idle || sessionState is SessionState.Failed
+    val connectable = remember(receivers) { receivers.filter { it.supportsMirroring || it.isAudioOnly } }
 
     Column(
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .fillMaxWidth()
@@ -422,10 +509,43 @@ private fun SessionControls(sessionState: SessionState, onStopMirroring: () -> U
                     .testTag("stop_casting_button"),
             ) {
                 Icon(Icons.Outlined.StopCircle, contentDescription = null)
-                Spacer(Modifier.height(0.dp))
                 Text(
                     text = stringResource(R.string.action_stop),
                     style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
+
+        AnimatedVisibility(
+            visible = isIdleOrFailed && connectable.isNotEmpty(),
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
+        ) {
+            Button(
+                onClick = {
+                    if (selectedReceiver != null) {
+                        onStartCast(selectedReceiver)
+                    } else {
+                        onOpenDevicePicker()
+                    }
+                },
+                modifier = Modifier
+                    .widthIn(max = 640.dp)
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .testTag("start_casting_button"),
+            ) {
+                Icon(Icons.Outlined.Cast, contentDescription = null)
+                Text(
+                    text = if (selectedReceiver != null) {
+                        stringResource(R.string.action_cast_to, selectedReceiver.name)
+                    } else {
+                        stringResource(R.string.action_choose_device)
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }

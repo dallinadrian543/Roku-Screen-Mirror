@@ -31,8 +31,11 @@ data class AirPlayReceiver(
     /** How this receiver was discovered (mDNS, BLE, saved cache probe, or manual IP). */
     val discoverySource: DiscoverySource = DiscoverySource.MDNS,
 ) {
+    /** Unique network endpoint identifier for UI selection and list keys. */
+    val endpointKey: String get() = "${address.hostAddress}:$port"
+
     /** Stable key for persisting credentials; falls back to host:port if no deviceid. */
-    val stableId: String get() = deviceId ?: "${address.hostAddress}:$port"
+    val stableId: String get() = deviceId ?: endpointKey
 
     /** True when the receiver identifies as a Roku TV or Roku streaming player. */
     val isRoku: Boolean

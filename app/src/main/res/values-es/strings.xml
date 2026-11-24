@@ -94,4 +94,8 @@
     <string name="error_pairing_throttled">El receptor está limitando los intentos de emparejamiento tras fallos. Apaga y enciende su receptor AirPlay (o espera unos 30 minutos) y vuelve a intentarlo.</string>
     <string name="manual_port_auto_chip">Seleccionar puerto AirPlay automáticamente</string>
     <string name="manual_port_auto_summary">Comprueba automáticamente los puertos 7000, 7100, 5000, 49152 y 7001</string>
+    <string name="action_cast_to">Transmitir a %1$s</string>
+    <string name="action_choose_device">Elegir dispositivo para transmitir</string>
+    <string name="choose_device_title">Elige un dispositivo</string>
+    <string name="choose_device_subtitle">Selecciona a qué dispositivo Roku o AirPlay quieres transmitir:</string>
 </resources>

@@ -164,4 +164,8 @@
     <string name="error_password_required">Password was rejected</string>
     <string name="error_mdns_failed">mDNS discovery failed to start</string>
     <string name="error_pairing_throttled">The receiver is throttling pairing attempts after failures. Toggle its AirPlay receiver off and on (or wait about 30 minutes), then try again.</string>
+    <string name="action_cast_to">Cast to %1$s</string>
+    <string name="action_choose_device">Choose device to cast</string>
+    <string name="choose_device_title">Choose a device</string>
+    <string name="choose_device_subtitle">Select which Roku or AirPlay device to cast to:</string>
 </resources>

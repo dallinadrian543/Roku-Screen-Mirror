@@ -230,6 +230,7 @@ class ReceiverDiscovery(private val context: Context) {
             linkedMapOf<String, AirPlayReceiver>().apply { putAll(mdnsSnapshot) },
         )
         val raopServiceNames = Collections.synchronizedSet(mutableSetOf<String>())
+        val serviceKeys = Collections.synchronizedMap(mutableMapOf<String, String>())
         var jmdns: JmDNS? = null
 
         fun publish() {
@@ -240,7 +241,7 @@ class ReceiverDiscovery(private val context: Context) {
 
         publish()
 
-        val listener = createMdnsListener(found, raopServiceNames, ::publish)
+        val listener = createMdnsListener(found, raopServiceNames, serviceKeys, ::publish)
 
         try {
             val address = withContext(Dispatchers.IO) {
@@ -335,6 +336,7 @@ class ReceiverDiscovery(private val context: Context) {
     private fun createMdnsListener(
         found: MutableMap<String, AirPlayReceiver>,
         raopServiceNames: MutableSet<String>,
+        serviceKeys: MutableMap<String, String>,
         publish: () -> Unit,
     ): ServiceListener = object : ServiceListener {
         override fun serviceAdded(event: ServiceEvent) {
@@ -354,7 +356,9 @@ class ReceiverDiscovery(private val context: Context) {
                 raopServiceNames.remove(event.name)
             }
             val receiver = event.info.toReceiver()
-            val key = receiver?.let { "${it.address.hostAddress}:${it.port}" } ?: event.name
+            val key = serviceKeys.remove("${event.type}:${event.name}")
+                ?: receiver?.endpointKey
+                ?: return
             val removed = synchronized(found) { found.remove(key) != null }
             if (removed) publish()
         }
@@ -374,10 +378,11 @@ class ReceiverDiscovery(private val context: Context) {
                     found.entries.removeAll {
                         it.value.deviceId == receiver.deviceId &&
                             it.value.address !is Inet4Address &&
-                            it.key != "${receiver.address.hostAddress}:${receiver.port}"
+                            it.key != receiver.endpointKey
                     }
                 }
-                val key = "${receiver.address.hostAddress}:${receiver.port}"
+                val key = receiver.endpointKey
+                serviceKeys["${event.type}:${event.name}"] = key
                 val existing = found[key]
                 val withAudioFlag = if (endpointHasRaopService(raopServiceNames, receiver, event.name)) {
                     receiver.copy(hasAudioOnlyService = true)

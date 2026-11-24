@@ -180,4 +180,40 @@ class SetupRequestsTest {
             ),
         )
     }
+
+    @Test
+    fun `modern audio compat setup omits dynamic stream id and includes control port`() {
+        val shk = ByteArray(32) { it.toByte() }
+        val withConnections = BinaryPlistReader.read(
+            ModernSetupRequests.modernAudioSetupCompat(
+                streamConnectionId = 15L,
+                shk = shk,
+                controlPort = 6123,
+                uri = "rtsp://1.2.3.4:7000/15",
+                useStreamConnections = true,
+            ).body!!,
+        ).asDict()
+
+        val streamWith = withConnections?.get("streams").asArray()?.first().asDict()
+        assertEquals(2L, streamWith?.get("ct")?.asLong())
+        assertEquals(352L, streamWith?.get("spf")?.asLong())
+        assertEquals(6123, streamWith?.get("controlPort")?.asInt())
+        assertNull(streamWith?.get("supportsDynamicStreamID"))
+        assertNull(streamWith?.get("redundantAudio"))
+        assertTrue(streamWith?.get("streamConnections") != null)
+
+        val withoutConnections = BinaryPlistReader.read(
+            ModernSetupRequests.modernAudioSetupCompat(
+                streamConnectionId = 15L,
+                shk = shk,
+                controlPort = 6123,
+                uri = "rtsp://1.2.3.4:7000/9",
+                useStreamConnections = false,
+            ).body!!,
+        ).asDict()
+
+        val streamWithout = withoutConnections?.get("streams").asArray()?.first().asDict()
+        assertEquals(6123, streamWithout?.get("controlPort")?.asInt())
+        assertNull(streamWithout?.get("streamConnections"))
+    }
 }

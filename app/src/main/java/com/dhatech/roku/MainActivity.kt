@@ -49,18 +49,15 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: MirrorViewModel by viewModels()
 
-    private var pendingAudioOnly = false
-    private var pendingVideoOnly = false
-
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
         val receiver = viewModel.pendingReceiver
         viewModel.pendingReceiver = null
-        val audioOnly = pendingAudioOnly
-        val videoOnly = pendingVideoOnly
-        pendingAudioOnly = false
-        pendingVideoOnly = false
+        val audioOnly = viewModel.pendingAudioOnly
+        val videoOnly = viewModel.pendingVideoOnly
+        viewModel.pendingAudioOnly = false
+        viewModel.pendingVideoOnly = false
         val data = result.data
         if (result.resultCode != Activity.RESULT_OK || data == null || receiver == null) {
             return@registerForActivityResult
@@ -121,6 +118,7 @@ class MainActivity : ComponentActivity() {
                         manualConnectError = manualConnectError,
                     ),
                     actions = DiscoveryActions(
+                        onSelectReceiver = viewModel::selectReceiver,
                         onStartMirroring = ::requestProjection,
                         onReceiverLongPress = { audioOnlyTarget = it },
                         onStopMirroring = {
@@ -139,6 +137,7 @@ class MainActivity : ComponentActivity() {
                         onRefreshDiscovery = viewModel::refreshDiscovery,
                         onConnectManualIp = { host, port, onDone ->
                             viewModel.addManualReceiver(host, port) { receiver ->
+                                viewModel.selectReceiver(receiver)
                                 onDone()
                                 requestProjection(receiver)
                             }
@@ -205,7 +204,7 @@ class MainActivity : ComponentActivity() {
     ) {
         AlertDialog(
             onDismissRequest = onDismiss,
-            title = { Text(receiver.name) },
+            title = { Text("${receiver.name} (${receiver.endpointKey})") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(onClick = onMirror, modifier = Modifier.fillMaxWidth()) {
@@ -230,9 +229,10 @@ class MainActivity : ComponentActivity() {
         ) {
             return
         }
+        viewModel.selectReceiver(receiver)
         viewModel.pendingReceiver = receiver
-        pendingAudioOnly = audioOnly
-        pendingVideoOnly = videoOnly
+        viewModel.pendingAudioOnly = audioOnly
+        viewModel.pendingVideoOnly = videoOnly
         val manager = getSystemService(MediaProjectionManager::class.java)
         val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
             viewModel.settings.value.drmCompatibilityMode

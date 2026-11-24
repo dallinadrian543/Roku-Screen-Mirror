@@ -17,11 +17,14 @@ import com.dhatech.roku.airplay.discovery.AirPlayReceiver
  * @param showAvatar false in the Quick Settings picker, where the rows stay
  *   compact without the leading avatar.
  */
+@Suppress("LongParameterList")
 fun LazyListScope.receiverItems(
     receivers: List<AirPlayReceiver>,
     pairedIds: Set<String>,
     enabled: Boolean,
     onSelect: (AirPlayReceiver) -> Unit,
+    selectedEndpointKey: String? = null,
+    onCastClick: ((AirPlayReceiver) -> Unit)? = null,
     onLongPress: ((AirPlayReceiver) -> Unit)? = null,
     showAvatar: Boolean = true,
 ) {
@@ -30,8 +33,9 @@ fun LazyListScope.receiverItems(
         // Two receivers can advertise the same `deviceid` (both 爱思投屏 and
         // UxPlay fake AppleTV3,2 with the same MAC), so key on the network
         // endpoint, which is unique.
-        key = { "${it.address.hostAddress}:${it.port}" },
+        key = { it.endpointKey },
     ) { receiver ->
+        val isSelected = receiver.endpointKey == selectedEndpointKey
         ReceiverCard(
             receiver = receiver,
             isPaired = receiver.stableId in pairedIds,
@@ -39,7 +43,13 @@ fun LazyListScope.receiverItems(
             // can tell they were found rather than missed. Audio-only devices
             // are tappable — they start an audio session instead.
             enabled = enabled && (receiver.supportsMirroring || receiver.isAudioOnly),
+            isSelected = isSelected,
             onClick = { onSelect(receiver) },
+            onCastClick = if (onCastClick != null && isSelected) {
+                { onCastClick(receiver) }
+            } else {
+                null
+            },
             onLongClick = if (onLongPress != null &&
                 receiver.hasAudioOnlyService &&
                 !receiver.isAudioOnly

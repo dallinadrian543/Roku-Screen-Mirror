@@ -11,6 +11,7 @@ import android.util.Log
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import android.media.AudioFormat as AndroidAudioFormat
 
@@ -23,79 +24,135 @@ class AlacAudioEncoder(
 ) : AudioFrameSource {
 
     private val encoder = AlacEncoder()
+    private val released = AtomicBoolean(false)
+
+    @Volatile
     private var record: AudioRecord? = null
+
+    @Volatile
     private var micMixer: MicCaptureMixer? = null
+
+    @Volatile
+    private var readerThread: Thread? = null
 
     @Volatile
     private var isCapturing = false
 
     @SuppressLint("MissingPermission") // Playback capture is authorised by the projection.
-    @Suppress("LoopWithTooManyJumpStatements") // read-failure, short-read, and channel-closed exits
     override fun frames(): Flow<EncodedAudioFrame> = callbackFlow {
-        isCapturing = true
-        val audioRecord = createPlaybackRecord()
-        record = audioRecord
-        audioRecord.startRecording()
+        try {
+            val audioRecord = createPlaybackRecord()
+            if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
+                runCatching { audioRecord.release() }
+                throw IllegalStateException("AudioRecord failed to initialize (state=${audioRecord.state})")
+            }
+            record = audioRecord
+            isCapturing = true
+            audioRecord.startRecording()
 
-        val activeMixer = if (mixMicrophone) {
-            MicCaptureMixer(
-                sampleRate = SAMPLE_RATE,
-                channels = CHANNELS,
-                preferredDevice = preferredMicDevice,
-                onSilencedChanged = onMicSilencedChanged,
-            ).also { mixer ->
-                if (!mixer.start()) {
-                    mixer.close()
-                } else {
-                    micMixer = mixer
+            val activeMixer = startMicMixerIfRequested()
+            val reader = thread(name = "roku-alac-reader") {
+                readAndEncodeLoop(audioRecord, activeMixer) { encodedFrame ->
+                    !trySend(encodedFrame).isClosed
                 }
             }
+            readerThread = reader
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start ALAC audio capture", e)
+            stopAndRelease()
+            close(e)
+        }
+
+        awaitClose { stopAndRelease() }
+    }
+
+    private fun startMicMixerIfRequested(): MicCaptureMixer? {
+        if (!mixMicrophone) return null
+        val mixer = MicCaptureMixer(
+            sampleRate = SAMPLE_RATE,
+            channels = CHANNELS,
+            preferredDevice = preferredMicDevice,
+            onSilencedChanged = onMicSilencedChanged,
+        )
+        return if (mixer.start()) {
+            micMixer = mixer
+            mixer
         } else {
+            mixer.close()
             null
         }
+    }
 
-        val reader = thread(name = "roku-alac-reader") {
-            val frameBytes = FRAME_SAMPLES * CHANNELS * 2
-            val pcm = ByteArray(frameBytes)
-            val frame = ByteArray(AlacEncoder.MAX_FRAME_BYTES)
-            var samplesSubmitted = 0L
-            while (isCapturing) {
-                val read = try {
-                    audioRecord.read(pcm, 0, frameBytes)
-                } catch (e: Exception) {
-                    Log.w(TAG, "AudioRecord read failed", e)
-                    break
+    private fun readAndEncodeLoop(
+        audioRecord: AudioRecord,
+        activeMixer: MicCaptureMixer?,
+        onFrame: (EncodedAudioFrame) -> Boolean,
+    ) {
+        val frameBytes = FRAME_SAMPLES * CHANNELS * 2
+        val pcm = ByteArray(frameBytes)
+        val frame = ByteArray(AlacEncoder.MAX_FRAME_BYTES)
+        var samplesSubmitted = 0L
+
+        while (isCapturing && fillPcmFrame(audioRecord, pcm, frameBytes)) {
+            activeMixer?.mixInto(pcm, audioManager)
+            val encoded = encoder.encode(frame, pcm)
+            val data = frame.copyOf(encoded)
+            val timestampUs = samplesSubmitted * 1_000_000L / SAMPLE_RATE
+            samplesSubmitted += FRAME_SAMPLES
+            if (!onFrame(EncodedAudioFrame(data, timestampUs, false))) break
+        }
+    }
+
+    @Suppress("ReturnCount") // Early returns cover read errors, stopped recorder state, and full frame completion.
+    private fun fillPcmFrame(audioRecord: AudioRecord, pcm: ByteArray, frameBytes: Int): Boolean {
+        var offset = 0
+        var emptyReads = 0
+        while (isCapturing && offset < frameBytes) {
+            val read = runCatching { audioRecord.read(pcm, offset, frameBytes - offset) }
+                .onFailure { Log.w(TAG, "AudioRecord read failed", it) }
+                .getOrElse { return false }
+            when {
+                read < 0 -> {
+                    Log.w(TAG, "AudioRecord read returned error $read; stopping capture")
+                    return false
                 }
-                if (read < frameBytes) continue
 
-                activeMixer?.mixInto(pcm, audioManager)
-                val encoded = encoder.encode(frame, pcm)
-                val data = frame.copyOf(encoded)
-                val timestampUs = samplesSubmitted * 1_000_000L / SAMPLE_RATE
-                samplesSubmitted += FRAME_SAMPLES
-                if (trySend(EncodedAudioFrame(data, timestampUs, false)).isClosed) break
+                read == 0 -> {
+                    if (audioRecord.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                        Log.w(TAG, "AudioRecord stopped recording; ending audio capture")
+                        return false
+                    }
+                    emptyReads++
+                    if (emptyReads == LOG_ZERO_READ_THRESHOLD) {
+                        Log.d(TAG, "AudioPlaybackCapture idle (waiting for playback audio)")
+                    }
+                    val slept = runCatching { Thread.sleep(ZERO_READ_SLEEP_MS) }.isSuccess
+                    if (!slept) return false
+                }
+
+                else -> {
+                    emptyReads = 0
+                    offset += read
+                }
             }
         }
-
-        awaitClose {
-            isCapturing = false
-            runCatching { micMixer?.close() }
-            micMixer = null
-            runCatching { audioRecord.stop() }
-            runCatching { audioRecord.release() }
-            record = null
-            runCatching { reader.join(500) }
-        }
+        return isCapturing && offset == frameBytes
     }
 
-    override fun close() {
+    private fun stopAndRelease() {
         isCapturing = false
+        if (!released.compareAndSet(false, true)) return
         runCatching { micMixer?.close() }
         micMixer = null
-        runCatching { record?.stop() }
-        runCatching { record?.release() }
+        val activeRecord = record
+        runCatching { activeRecord?.stop() }
+        runCatching { readerThread?.join(READER_JOIN_MS) }
+        readerThread = null
+        runCatching { activeRecord?.release() }
         record = null
     }
+
+    override fun close() = stopAndRelease()
 
     @SuppressLint("MissingPermission")
     private fun createPlaybackRecord(): AudioRecord {
@@ -128,5 +185,8 @@ class AlacAudioEncoder(
         const val FRAME_SAMPLES = AlacEncoder.FRAME_SAMPLES
         const val MIN_BUFFER_FLOOR_BYTES = 4 * 1024
         const val BUFFER_SLACK = 4
+        const val READER_JOIN_MS = 500L
+        const val LOG_ZERO_READ_THRESHOLD = 50
+        const val ZERO_READ_SLEEP_MS = 10L
     }
 }

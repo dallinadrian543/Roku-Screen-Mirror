@@ -94,4 +94,8 @@
     <string name="error_pairing_throttled">Il ricevente sta limitando i tentativi di abbinamento dopo errori. Spegni e riaccendi il suo ricevitore AirPlay (o attendi circa 30 minuti) e riprova.</string>
     <string name="manual_port_auto_chip">Selezione automatica porta AirPlay</string>
     <string name="manual_port_auto_summary">Controlla automaticamente le porte 7000, 7100, 5000, 49152 e 7001</string>
+    <string name="action_cast_to">Trasmetti a %1$s</string>
+    <string name="action_choose_device">Scegli dispositivo su cui trasmettere</string>
+    <string name="choose_device_title">Scegli un dispositivo</string>
+    <string name="choose_device_subtitle">Seleziona il dispositivo Roku o AirPlay su cui trasmettere:</string>
 </resources>

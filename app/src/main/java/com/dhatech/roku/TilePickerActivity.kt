@@ -25,7 +25,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -38,6 +41,7 @@ import com.dhatech.roku.airplay.session.SessionState
 import com.dhatech.roku.airplay.session.activeReceiver
 import com.dhatech.roku.cast.R
 import com.dhatech.roku.service.MirrorController
+import com.dhatech.roku.service.SerializableReceiver
 import com.dhatech.roku.service.startCast
 import com.dhatech.roku.settings.MirrorSettings
 import com.dhatech.roku.ui.components.receiverItems
@@ -72,6 +76,9 @@ class TilePickerActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        @Suppress("DEPRECATION")
+        pendingReceiver = (savedInstanceState?.getSerializable(STATE_PENDING_RECEIVER) as? SerializableReceiver)
+            ?.toReceiver()
         requestRuntimePermissions()
         setContent {
             val app = application as KiteApplication
@@ -81,6 +88,11 @@ class TilePickerActivity : ComponentActivity() {
             drmCompatEnabled = settings.drmCompatibilityMode
             KiteTheme(themeMode = settings.themeMode) { PickerDialog() }
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        pendingReceiver?.let { outState.putSerializable(STATE_PENDING_RECEIVER, SerializableReceiver.from(it)) }
     }
 
     private fun requestRuntimePermissions() {
@@ -115,6 +127,14 @@ class TilePickerActivity : ComponentActivity() {
         val pairedIds by produceState(initialValue = emptySet<String>()) {
             value = app.credentialStore.pairedReceiverIds()
         }
+        var selectedKey by remember { mutableStateOf<String?>(null) }
+        val connectable = remember(receivers) { receivers.filter { it.supportsMirroring || it.isAudioOnly } }
+        val resolvedKey = when {
+            selectedKey != null && connectable.any { it.endpointKey == selectedKey } -> selectedKey
+            connectable.size == 1 -> connectable.first().endpointKey
+            else -> null
+        }
+        val selectedReceiver = receivers.firstOrNull { it.endpointKey == resolvedKey }
 
         when (val state = session) {
             is SessionState.AwaitingPin, is SessionState.AwaitingPassword -> {
@@ -139,8 +159,24 @@ class TilePickerActivity : ComponentActivity() {
         AlertDialog(
             onDismissRequest = { finish() },
             title = { Text(stringResource(R.string.discovery_title)) },
-            text = { PickerContent(receivers, pairedIds, session) },
+            text = {
+                PickerContent(
+                    receivers = receivers,
+                    pairedIds = pairedIds,
+                    session = session,
+                    selectedEndpointKey = resolvedKey,
+                    onSelect = { selectedKey = it.endpointKey },
+                    onCast = { launchConsent(it) },
+                )
+            },
             confirmButton = {
+                if (session is SessionState.Idle && selectedReceiver != null) {
+                    TextButton(onClick = { launchConsent(selectedReceiver) }) {
+                        Text(stringResource(R.string.action_start))
+                    }
+                }
+            },
+            dismissButton = {
                 TextButton(onClick = { finish() }) {
                     Text(stringResource(R.string.action_cancel))
                 }
@@ -148,8 +184,16 @@ class TilePickerActivity : ComponentActivity() {
         )
     }
 
+    @Suppress("LongParameterList")
     @Composable
-    private fun PickerContent(receivers: List<AirPlayReceiver>, pairedIds: Set<String>, session: SessionState) {
+    private fun PickerContent(
+        receivers: List<AirPlayReceiver>,
+        pairedIds: Set<String>,
+        session: SessionState,
+        selectedEndpointKey: String?,
+        onSelect: (AirPlayReceiver) -> Unit,
+        onCast: (AirPlayReceiver) -> Unit,
+    ) {
         when {
             session is SessionState.Failed -> Text(
                 text = session.reason,
@@ -171,7 +215,9 @@ class TilePickerActivity : ComponentActivity() {
                     receivers = receivers,
                     pairedIds = pairedIds,
                     enabled = true,
-                    onSelect = { launchConsent(it) },
+                    selectedEndpointKey = selectedEndpointKey,
+                    onSelect = onSelect,
+                    onCastClick = onCast,
                     showAvatar = false,
                 )
             }
@@ -185,5 +231,9 @@ class TilePickerActivity : ComponentActivity() {
             Spacer(Modifier.size(16.dp))
             Text(text, style = MaterialTheme.typography.bodyMedium)
         }
+    }
+
+    private companion object {
+        const val STATE_PENDING_RECEIVER = "pending_receiver"
     }
 }

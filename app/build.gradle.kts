@@ -5,7 +5,7 @@ plugins {
 }
 
 /** The one source of truth for the app version; release tags must match it. */
-val appVersionName = "1.0.0"
+val appVersionName = "1.0.1"
 
 android {
     namespace = "com.dhatech.roku.cast"
@@ -15,7 +15,7 @@ android {
         applicationId = "com.dhatech.roku.cast"
         minSdk = 33
         targetSdk = 37
-        versionCode = 1
+        versionCode = 2
         versionName = appVersionName
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")
@@ -71,7 +71,8 @@ android {
         }
         debug {
             signingConfig = signingConfigs.getByName("debugConfig")
-            versionNameSuffix = System.getenv("KITE_VERSION_SUFFIX")?.let { "-$it" }.orEmpty()
+            isDebuggable = true
+            versionNameSuffix = System.getenv("KITE_VERSION_SUFFIX")?.let { "-$it" } ?: "-testing"
         }
     }
 
@@ -145,7 +146,6 @@ dependencies {
     }
 
     debugImplementation(libs.androidx.compose.ui.tooling)
-    debugImplementation(libs.leakcanary.android)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.ext.junit)

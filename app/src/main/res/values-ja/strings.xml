@@ -94,4 +94,8 @@
     <string name="error_pairing_throttled">失敗が続いたため、受信側がペアリングを制限しています。受信側のAirPlayレシーバーをオフ/オンするか、約30分待ってから再試行してください。</string>
     <string name="manual_port_auto_chip">AirPlay ポートを自動選択</string>
     <string name="manual_port_auto_summary">7000、7100、5000、49152、7001 ポートを自動確認します</string>
+    <string name="action_cast_to">%1$s にキャスト</string>
+    <string name="action_choose_device">キャスト先デバイスを選択</string>
+    <string name="choose_device_title">デバイスを選択</string>
+    <string name="choose_device_subtitle">キャスト先の Roku または AirPlay デバイスを選択してください：</string>
 </resources>

@@ -94,4 +94,8 @@
     <string name="error_pairing_throttled">Le récepteur limite les tentatives de jumelage après des échecs. Désactivez puis réactivez son récepteur AirPlay (ou attendez environ 30 minutes), puis réessayez.</string>
     <string name="manual_port_auto_chip">Sélection auto du port AirPlay</string>
     <string name="manual_port_auto_summary">Vérifie automatiquement les ports 7000, 7100, 5000, 49152 et 7001</string>
+    <string name="action_cast_to">Diffuser sur %1$s</string>
+    <string name="action_choose_device">Choisir un appareil pour diffuser</string>
+    <string name="choose_device_title">Choisir un appareil</string>
+    <string name="choose_device_subtitle">Sélectionnez l’appareil Roku ou AirPlay vers lequel diffuser :</string>
 </resources>

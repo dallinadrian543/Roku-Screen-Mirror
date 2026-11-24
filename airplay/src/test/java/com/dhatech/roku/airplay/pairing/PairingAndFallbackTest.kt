@@ -171,11 +171,7 @@ class PairingAndFallbackTest {
         }
     }
 
-    private fun serveFakeRtspConnection(
-        socket: Socket,
-        hap: FakeHapAccessory,
-        seenHkp: MutableList<String>,
-    ) {
+    private fun serveFakeRtspConnection(socket: Socket, hap: FakeHapAccessory, seenHkp: MutableList<String>) {
         socket.use { s ->
             val input = BufferedInputStream(s.getInputStream())
             val output = s.getOutputStream()

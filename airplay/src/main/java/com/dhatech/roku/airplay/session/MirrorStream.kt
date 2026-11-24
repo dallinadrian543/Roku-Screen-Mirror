@@ -3,9 +3,11 @@ package com.dhatech.roku.airplay.session
 import android.util.Log
 import java.io.BufferedOutputStream
 import java.io.Closeable
+import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -23,9 +25,9 @@ import java.util.concurrent.atomic.AtomicLong
  *    length, header[5] flags IDR frames and header[40:48] carries the
  *    receiver's PTP timeline.
  *
- * Not thread-safe by design. One writer thread keeps the cipher counters and
- * the receiver's frame ordering consistent, so all sends go through the
- * session's single send loop.
+ * Thread-safe across the video frame sender and the periodic heartbeat tick:
+ * [writeLock] serialises cipher state updates, 128-byte headers, and payload
+ * writes so a keepalive can never interleave mid-frame and corrupt TCP framing.
  */
 @Suppress("LongParameterList")
 class MirrorStream(
@@ -47,7 +49,13 @@ class MirrorStream(
         lowLatencyMode: Boolean = false,
     ) : this(address, port, cipher, null, 0L, false, clock, lowLatencyMode)
 
+    private val writeLock = Any()
+    private val closed = AtomicBoolean(false)
+
+    @Volatile
     private var socket: Socket? = null
+
+    @Volatile
     private var output: BufferedOutputStream? = null
 
     private val bytesSent = AtomicLong(0)
@@ -73,25 +81,27 @@ class MirrorStream(
     data class Statistics(val bytes: Long, val frames: Long, val lastWriteMs: Long = 0L, val slowWriteCount: Long = 0L)
 
     fun connect(timeoutMs: Int = CONNECT_TIMEOUT_MS) {
-        check(socket == null) { "Already connected" }
-        // Build the endpoint OUTSIDE any Socket receiver. Inside a
-        // `Socket().apply { }` block, `port` would resolve to Socket.getPort()
-        // (0 for an unconnected socket) and shadow this class's field.
-        val endpoint = InetSocketAddress(address, port)
-        Log.i(TAG, "Connecting data channel to $endpoint (lowLatency=$lowLatencyMode)")
+        synchronized(writeLock) {
+            check(socket == null && !closed.get()) { "Already connected or closed" }
+            // Build the endpoint OUTSIDE any Socket receiver. Inside a
+            // `Socket().apply { }` block, `port` would resolve to Socket.getPort()
+            // (0 for an unconnected socket) and shadow this class's field.
+            val endpoint = InetSocketAddress(address, port)
+            Log.i(TAG, "Connecting data channel to $endpoint (lowLatency=$lowLatencyMode)")
 
-        val s = Socket()
-        s.tcpNoDelay = true
-        if (lowLatencyMode) {
-            runCatching { s.trafficClass = IPTOS_LOWDELAY }
+            val s = Socket()
+            s.tcpNoDelay = true
+            if (lowLatencyMode) {
+                runCatching { s.trafficClass = IPTOS_LOWDELAY }
+            }
+            val bufferSize = if (lowLatencyMode) LOW_LATENCY_SEND_BUFFER_BYTES else SEND_BUFFER_BYTES
+            s.sendBufferSize = bufferSize
+            s.connect(endpoint, timeoutMs)
+
+            socket = s
+            output = BufferedOutputStream(s.getOutputStream(), bufferSize)
+            Log.i(TAG, "Data connection open to ${address.hostAddress}:$port")
         }
-        val bufferSize = if (lowLatencyMode) LOW_LATENCY_SEND_BUFFER_BYTES else SEND_BUFFER_BYTES
-        s.sendBufferSize = bufferSize
-        s.connect(endpoint, timeoutMs)
-
-        socket = s
-        output = BufferedOutputStream(s.getOutputStream(), bufferSize)
-        Log.i(TAG, "Data connection open to ${address.hostAddress}:$port")
     }
 
     /**
@@ -104,23 +114,25 @@ class MirrorStream(
     fun sendCodecConfig(parameterSets: ParameterSets, width: Int, height: Int, presentationTimeUs: Long) {
         val payload = parameterSets.toAvcDecoderConfig() // not encrypted
         val timestampNtp = clock.fromPresentationTimeUs(presentationTimeUs)
-        if (!modern) configTimestampNtp = timestampNtp
-        val header = if (modern) {
-            MirrorPacket.modernCodecConfigHeader(
-                payloadSize = payload.size,
-                timestampNtp = timestampNtp,
-                sourceWidth = width,
-                sourceHeight = height,
-            )
-        } else {
-            MirrorPacket.codecConfigHeader(
-                payloadSize = payload.size,
-                timestampNtp = timestampNtp,
-                sourceWidth = width,
-                sourceHeight = height,
-            )
+        synchronized(writeLock) {
+            if (!modern) configTimestampNtp = timestampNtp
+            val header = if (modern) {
+                MirrorPacket.modernCodecConfigHeader(
+                    payloadSize = payload.size,
+                    timestampNtp = timestampNtp,
+                    sourceWidth = width,
+                    sourceHeight = height,
+                )
+            } else {
+                MirrorPacket.codecConfigHeader(
+                    payloadSize = payload.size,
+                    timestampNtp = timestampNtp,
+                    sourceWidth = width,
+                    sourceHeight = height,
+                )
+            }
+            writePacketLocked(header, payload)
         }
-        writePacket(header, payload)
         Log.i(TAG, "Sent avcC config (${payload.size} bytes) for ${width}x$height, ts=$timestampNtp")
     }
 
@@ -131,32 +143,35 @@ class MirrorStream(
 
         val keyframe = containsIdr(avcc)
 
-        if (modern) {
-            val leadMs = if (lowLatencyMode) LOW_LATENCY_PLAYOUT_LEAD_MS else PLAYOUT_LEAD_MS
-            val timestampNtp = clock.fromPresentationTimeUs(presentationTimeUs) +
-                (leadMs * FRACTION_SCALE) / 1_000
-            val header = MirrorPacket.modernVideoHeader(
-                payloadSize = avcc.size + (chacha?.overhead ?: 0),
-                timestampNtp = timestampNtp,
-                keyframe = keyframe,
-                timelineId = timelineId,
-            )
-            val sealed = chacha?.seal(avcc, header) ?: avcc
-            writePacket(header, sealed)
-        } else {
-            val payload = cipher!!.encrypt(avcc)
-            // The receiver drops the SPS/PPS unless the first video frame carries the
-            // exact same timestamp as the codec config, so force it for the first one.
-            val timestampNtp = configTimestampNtp?.also { configTimestampNtp = null }
-                ?: clock.fromPresentationTimeUs(presentationTimeUs)
-            val header = MirrorPacket.videoHeader(
-                payloadSize = payload.size,
-                timestampNtp = timestampNtp,
-            )
-            writePacket(header, payload)
+        synchronized(writeLock) {
+            if (closed.get()) throw IOException("Data connection closed")
+            if (modern) {
+                val leadMs = if (lowLatencyMode) LOW_LATENCY_PLAYOUT_LEAD_MS else PLAYOUT_LEAD_MS
+                val timestampNtp = clock.fromPresentationTimeUs(presentationTimeUs) +
+                    (leadMs * FRACTION_SCALE) / 1_000
+                val header = MirrorPacket.modernVideoHeader(
+                    payloadSize = avcc.size + (chacha?.overhead ?: 0),
+                    timestampNtp = timestampNtp,
+                    keyframe = keyframe,
+                    timelineId = timelineId,
+                )
+                val sealed = chacha?.seal(avcc, header) ?: avcc
+                writePacketLocked(header, sealed)
+            } else {
+                val payload = cipher!!.encrypt(avcc)
+                // The receiver drops the SPS/PPS unless the first video frame carries the
+                // exact same timestamp as the codec config, so force it for the first one.
+                val timestampNtp = configTimestampNtp?.also { configTimestampNtp = null }
+                    ?: clock.fromPresentationTimeUs(presentationTimeUs)
+                val header = MirrorPacket.videoHeader(
+                    payloadSize = payload.size,
+                    timestampNtp = timestampNtp,
+                )
+                writePacketLocked(header, payload)
+            }
+            firstFrameSent = true
+            framesSent.incrementAndGet()
         }
-        firstFrameSent = true
-        framesSent.incrementAndGet()
     }
 
     /** Modern data-channel keepalive (doubletake dataHeartbeatLoop shape). */
@@ -164,11 +179,15 @@ class MirrorStream(
         // Sound-only sessions never send a video frame, yet the receiver
         // still expects the data-channel beat — send it unconditionally.
         if (!modern) return
-        writePacket(MirrorPacket.modernHeartbeatHeader(), ByteArray(0))
+        synchronized(writeLock) {
+            writePacketLocked(MirrorPacket.modernHeartbeatHeader(), ByteArray(0))
+        }
     }
 
     fun sendHeartbeatLegacy() {
-        writePacket(MirrorPacket.heartbeatHeader(), ByteArray(0))
+        synchronized(writeLock) {
+            writePacketLocked(MirrorPacket.heartbeatHeader(), ByteArray(0))
+        }
     }
 
     /**
@@ -188,8 +207,9 @@ class MirrorStream(
         return false
     }
 
-    private fun writePacket(header: ByteArray, payload: ByteArray) {
-        val out = output ?: throw IllegalStateException("Data connection is not open")
+    private fun writePacketLocked(header: ByteArray, payload: ByteArray) {
+        if (closed.get()) throw IOException("Data connection closed")
+        val out = output ?: throw IOException("Data connection is not open")
         val startedNs = System.nanoTime()
         out.write(header)
         if (payload.isNotEmpty()) out.write(payload)
@@ -203,11 +223,10 @@ class MirrorStream(
     }
 
     override fun close() {
-        // Close the socket BEFORE anything touches the stream: a receiver that
-        // died mid-frame leaves the TCP write blocked, and flushing that
-        // BufferedOutputStream would stall the calling thread until the
-        // kernel's retransmission timeout (minutes). socket.close() unblocks
-        // any in-flight write immediately, and it flushes what was buffered.
+        if (!closed.compareAndSet(false, true)) return
+        // Close the socket BEFORE anything touches writeLock: a receiver that
+        // died mid-frame leaves the TCP write blocked, and waiting on writeLock
+        // would stall close() until the kernel's retransmission timeout.
         runCatching { socket?.close() }
         socket = null
         output = null

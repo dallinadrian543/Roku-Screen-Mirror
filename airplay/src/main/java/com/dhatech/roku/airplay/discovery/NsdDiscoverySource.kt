@@ -45,8 +45,11 @@ object NsdDiscoverySource {
             Collections.synchronizedMap(linkedMapOf())
         val raopNames: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
         val resolveMutex = Mutex()
-        val callbacks = mutableListOf<NsdManager.DiscoveryListener>()
-        val infoCallbacks = mutableListOf<NsdManager.ServiceInfoCallback>()
+        val callbacks: MutableList<NsdManager.DiscoveryListener> =
+            Collections.synchronizedList(mutableListOf())
+        val infoCallbacks: MutableList<NsdManager.ServiceInfoCallback> =
+            Collections.synchronizedList(mutableListOf())
+        val serviceKeys: MutableMap<String, String> = Collections.synchronizedMap(mutableMapOf())
 
         fun publish() {
             synchronized(found) { scope.trySend(found.toMap()) }
@@ -72,7 +75,8 @@ object NsdDiscoverySource {
                     clientName = clientName,
                 ) ?: base
             }
-            val key = "${receiver.address.hostAddress}:${receiver.port}"
+            val key = receiver.endpointKey
+            serviceKeys["$serviceType:$serviceName"] = key
             synchronized(found) {
                 val existing = found[key]
                 val withRaop = if (hasMatchingRaop(raopNames, receiver, serviceName)) {
@@ -119,12 +123,9 @@ object NsdDiscoverySource {
             if (service.serviceType.startsWith("_raop")) {
                 raopNames.remove(service.serviceName)
             }
-            val cleanName = service.serviceName.substringAfter('@', service.serviceName)
-            val removed = synchronized(found) {
-                val toRemove = found.entries.filter { it.value.name == cleanName }.map { it.key }
-                toRemove.forEach { found.remove(it) }
-                toRemove.isNotEmpty()
-            }
+            val removedKey = serviceKeys.remove("${service.serviceType}:${service.serviceName}")
+                ?: return
+            val removed = synchronized(found) { found.remove(removedKey) != null }
             if (removed) publish()
         }
     }
@@ -157,11 +158,13 @@ object NsdDiscoverySource {
         session.publish()
 
         awaitClose {
-            session.callbacks.forEach { listener ->
+            val discoveryListeners = synchronized(session.callbacks) { session.callbacks.toList() }
+            discoveryListeners.forEach { listener ->
                 runCatching { nsd.stopServiceDiscovery(listener) }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                session.infoCallbacks.forEach { cb ->
+                val infoList = synchronized(session.infoCallbacks) { session.infoCallbacks.toList() }
+                infoList.forEach { cb ->
                     runCatching { nsd.unregisterServiceInfoCallback(cb) }
                 }
             }

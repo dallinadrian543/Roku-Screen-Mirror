@@ -4,6 +4,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.combinedClickable
@@ -25,8 +26,10 @@ import androidx.compose.material.icons.outlined.Speaker
 import androidx.compose.material.icons.outlined.Tv
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -51,6 +54,7 @@ import com.dhatech.roku.cast.R
  * One receiver in the discovery list.
  */
 @OptIn(ExperimentalFoundationApi::class)
+@Suppress("LongParameterList")
 @Composable
 fun ReceiverCard(
     receiver: AirPlayReceiver,
@@ -58,6 +62,8 @@ fun ReceiverCard(
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    isSelected: Boolean = false,
+    onCastClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     showAvatar: Boolean = true,
 ) {
@@ -84,8 +90,17 @@ fun ReceiverCard(
     Card(
         shape = RoundedCornerShape(cornerRadius),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            containerColor = if (isSelected) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            },
         ),
+        border = if (isSelected) {
+            BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+        } else {
+            null
+        },
         modifier = modifier
             .fillMaxWidth()
             .testTag("receiver_card_${receiver.address.hostAddress}_${receiver.port}")
@@ -101,11 +116,11 @@ fun ReceiverCard(
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
         ) {
             if (showAvatar) {
-                ReceiverAvatar(receiver = receiver, isPaired = isPaired)
-                Spacer(Modifier.size(16.dp))
+                ReceiverAvatar(receiver = receiver, isPaired = isPaired || isSelected)
+                Spacer(Modifier.size(14.dp))
             }
 
             Column(Modifier.weight(1f)) {
@@ -134,18 +149,29 @@ fun ReceiverCard(
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp),
                 )
-                Spacer(Modifier.size(8.dp))
+                Spacer(Modifier.size(6.dp))
             }
 
-            Icon(
-                imageVector = Icons.Outlined.Cast,
-                contentDescription = null,
-                tint = if (enabled) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.outlineVariant
-                },
-            )
+            if (isSelected && onCastClick != null) {
+                FilledIconButton(
+                    onClick = onCastClick,
+                    enabled = enabled,
+                    modifier = Modifier.testTag(
+                        "cast_selected_button_${receiver.address.hostAddress}_${receiver.port}",
+                    ),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Cast,
+                        contentDescription = stringResource(R.string.action_cast_to, receiver.name),
+                    )
+                }
+            } else {
+                RadioButton(
+                    selected = isSelected,
+                    onClick = null,
+                    enabled = enabled,
+                )
+            }
         }
     }
 }
@@ -191,9 +217,10 @@ private fun AirPlayReceiver.subtitle(): String {
         isRoku -> stringResource(R.string.receiver_roku)
         else -> displayModel
     }
-    return when (discoverySource) {
-        DiscoverySource.MANUAL_IP -> "$base · ${stringResource(R.string.receiver_source_manual)}"
-        DiscoverySource.SAVED_PROBE -> "$base · ${stringResource(R.string.receiver_source_saved)}"
-        else -> base
+    val sourceSuffix = when (discoverySource) {
+        DiscoverySource.MANUAL_IP -> " · ${stringResource(R.string.receiver_source_manual)}"
+        DiscoverySource.SAVED_PROBE -> " · ${stringResource(R.string.receiver_source_saved)}"
+        else -> ""
     }
+    return "$base · $endpointKey$sourceSuffix"
 }

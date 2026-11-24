@@ -64,6 +64,7 @@ internal class ModernSessionSetup(
         videoEnabled: Boolean = true,
         lowLatencyMode: Boolean = false,
         fairPlaySupported: Boolean = true,
+        isRoku: Boolean = receiver.isRoku,
     ): SetupResult {
         val control = sendControlSetup(pairing, timingPort)
         configureMediaClock(control.response, control.timing)
@@ -97,11 +98,11 @@ internal class ModernSessionSetup(
         }
 
         val audio = if (videoEnabled) {
-            runCatching { announceAudio(client) }
+            runCatching { announceAudio(client, control.timing, control.controlUri, isRoku) }
                 .onFailure { Log.w(TAG, "Modern audio SETUP rejected; continuing video-only", it) }
                 .getOrNull()
         } else {
-            announceAudio(client)
+            announceAudio(client, control.timing, control.controlUri, isRoku)
         }
         if (audio == null) {
             audioUri = control.controlUri
@@ -176,7 +177,12 @@ internal class ModernSessionSetup(
      * even for silent sessions). Announce it with a random ChaCha stream key,
      * send the initial TimeAnnounce, and keep the sockets for real audio.
      */
-    private suspend fun announceAudio(client: RtspClient): ModernAudioStream {
+    private suspend fun announceAudio(
+        client: RtspClient,
+        timingProtocol: String,
+        controlUri: String,
+        isRoku: Boolean,
+    ): ModernAudioStream {
         val audioShk = ByteArray(32).also(java.security.SecureRandom()::nextBytes)
         val audioControl = java.net.DatagramSocket().apply { reuseAddress = true }
         val audioData = java.net.DatagramSocket()
@@ -188,16 +194,29 @@ internal class ModernSessionSetup(
         // defaulted to.
         val audioConnectionId = kotlin.random.Random.nextLong(1, Long.MAX_VALUE)
         audioUri = "rtsp://${receiver.address.hostAddress}:${receiver.port}/$audioConnectionId"
-        val audioResponse = client.send(
-            ModernSetupRequests.modernAudioSetup(
-                streamConnectionId = audioConnectionId,
+        val audioResponse = try {
+            sendAudioSetupWithFallback(
+                client = client,
+                audioConnectionId = audioConnectionId,
                 shk = audioShk,
                 controlPort = audioControl.localPort,
-                uri = audioUri,
-            ),
-        ).requireSuccess("SETUP (audio)")
+                controlUri = controlUri,
+            )
+        } catch (e: Exception) {
+            runCatching { audioControl.close() }
+            runCatching { audioData.close() }
+            throw e
+        }
 
-        val audioPorts = audioPorts(audioResponse)
+        val audioPorts = try {
+            audioPorts(audioResponse)
+        } catch (e: Exception) {
+            runCatching { audioControl.close() }
+            runCatching { audioData.close() }
+            throw e
+        }
+        val timelineId = clock.ptpTimelineId()
+        val usePtpSync = timingProtocol == "PTP" && timelineId != 0L
         val sender = ModernAudioStream(
             remoteAddress = receiver.address,
             remoteDataPort = audioPorts.dataPort,
@@ -206,24 +225,79 @@ internal class ModernSessionSetup(
             controlSocket = audioControl,
             streamKey = audioShk,
             clock = clock,
-            timelineId = clock.ptpTimelineId(),
+            timelineId = timelineId,
+            usePtpSync = usePtpSync,
         )
         sender.start()
 
-        // Real senders set the receiver volume after the audio SETUP — twice
-        // in captured pcaps, on the audio URI itself. Without this the Mac
-        // may start the stream muted.
-        repeat(2) {
-            runCatching {
-                client.send(ModernSetupRequests.modernVolume(audioUri))
-                    .requireSuccess("SET_PARAMETER (volume)")
-            }.onFailure { Log.w(TAG, "Volume SET_PARAMETER ignored by receiver", it) }
+        // macOS may start the stream muted without volume=0 dB, whereas Roku
+        // treats SET_PARAMETER volume=0.000000 as 100% system/TV volume.
+        if (isRoku) {
+            Log.i(TAG, "[SETUP] Skipping volume SET_PARAMETER for Roku so receiver keeps current volume")
+        } else {
+            repeat(2) {
+                runCatching {
+                    client.send(ModernSetupRequests.modernVolume(audioUri))
+                        .requireSuccess("SET_PARAMETER (volume)")
+                }.onFailure { Log.w(TAG, "Volume SET_PARAMETER ignored by receiver", it) }
+            }
         }
         Log.i(
             TAG,
-            "Screen-audio stream ready: data=" + audioPorts.dataPort + " ctrl=" + audioPorts.controlPort,
+            "Screen-audio stream ready: data=${audioPorts.dataPort} ctrl=${audioPorts.controlPort} " +
+                "ptpSync=$usePtpSync",
         )
         return sender
+    }
+
+    private suspend fun sendAudioSetupWithFallback(
+        client: RtspClient,
+        audioConnectionId: Long,
+        shk: ByteArray,
+        controlPort: Int,
+        controlUri: String,
+    ): RtspResponse {
+        val attempts = listOf(
+            "modern" to {
+                ModernSetupRequests.modernAudioSetup(
+                    streamConnectionId = audioConnectionId,
+                    shk = shk,
+                    controlPort = controlPort,
+                    uri = audioUri,
+                )
+            },
+            "compat-streamConnections" to {
+                ModernSetupRequests.modernAudioSetupCompat(
+                    streamConnectionId = audioConnectionId,
+                    shk = shk,
+                    controlPort = controlPort,
+                    uri = audioUri,
+                    useStreamConnections = true,
+                )
+            },
+            "compat-controlUri" to {
+                audioUri = controlUri
+                ModernSetupRequests.modernAudioSetupCompat(
+                    streamConnectionId = audioConnectionId,
+                    shk = shk,
+                    controlPort = controlPort,
+                    uri = controlUri,
+                    useStreamConnections = false,
+                )
+            },
+        )
+        var lastResponse: RtspResponse? = null
+        for ((label, requestBuilder) in attempts) {
+            val response = client.send(requestBuilder())
+            if (response.isSuccess) return response
+            lastResponse = response
+            Log.w(
+                TAG,
+                "Audio SETUP ($label) failed: ${response.statusCode} ${response.reason} " +
+                    "body=${response.body.toHex()}",
+            )
+        }
+        return lastResponse!!.requireSuccess("SETUP (audio)")
     }
 
     /**
@@ -321,10 +395,11 @@ internal class ModernSessionSetup(
         val rtcp = connections?.get("streamConnectionTypeRTCP").asDict()
         val dataPort = rtp?.get("streamConnectionKeyPort")?.asInt()
             ?: stream?.get("dataPort")?.asInt()
+            ?: stream?.get("port")?.asInt()
             ?: throw RtspException("Audio SETUP reply carried no RTP dataPort")
         val controlPort = rtcp?.get("streamConnectionKeyPort")?.asInt()
             ?: stream?.get("controlPort")?.asInt()
-            ?: throw RtspException("Audio SETUP reply carried no RTCP controlPort")
+            ?: 0
         return AudioPorts(dataPort = dataPort, controlPort = controlPort)
     }
 

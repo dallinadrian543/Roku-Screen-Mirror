@@ -50,6 +50,7 @@ class AudioStream(
      * frame, and the receiver counts on the repeats to fill it.
      */
     private val recentFrames = ArrayDeque<TimedFrame>(FRAME_REPEATS)
+    private val frameLock = Any()
 
     /** Wire packets by sequence number, for answering retransmit requests. */
     private val resendCache = LinkedHashMap<Int, ByteArray>()
@@ -143,6 +144,7 @@ class AudioStream(
     fun sendAudioFrame(frame: ByteArray) = sendFrame(frame, encrypt = true)
 
     private fun sendFrame(payload: ByteArray, encrypt: Boolean) {
+        if (closed.get()) return
         val outgoing = TimedFrame(
             sequenceNumber = sequenceNumber,
             rtpTimestamp = rtpTimestamp,
@@ -152,15 +154,20 @@ class AudioStream(
         sequenceNumber = (sequenceNumber + 1) and 0xFFFF
         rtpTimestamp += samplesPerFrame
 
-        if (recentFrames.size == FRAME_REPEATS) recentFrames.removeFirst()
-        recentFrames.addLast(outgoing)
+        val framesToSend = synchronized(frameLock) {
+            if (closed.get()) return
+            if (recentFrames.size == FRAME_REPEATS) recentFrames.removeFirst()
+            recentFrames.addLast(outgoing)
+            recentFrames.toList()
+        }
 
         // Oldest first, so the receiver sees ascending sequence numbers.
-        recentFrames.forEach(::transmit)
+        framesToSend.forEach(::transmit)
     }
 
     private fun transmit(frame: TimedFrame) {
-        val channel = socket ?: throw IllegalStateException("Audio channel is not open")
+        if (closed.get()) return
+        val channel = socket ?: return
         val bytes = AudioPacket.packet(
             sequenceNumber = frame.sequenceNumber,
             rtpTimestamp = frame.rtpTimestamp,
@@ -195,19 +202,20 @@ class AudioStream(
      */
     fun resend(startSeq: Int, count: Int): List<ByteArray> {
         val found = mutableListOf<ByteArray>()
+        val bounded = count.coerceIn(0, RESEND_CACHE_SIZE)
         val snapshot = synchronized(resendCache) { resendCache.toMap() }
-        for (offset in 0 until count) {
+        for (offset in 0 until bounded) {
             snapshot[(startSeq + offset) and 0xFFFF]?.let(found::add)
         }
         return found
     }
 
     override fun close() {
-        closed.set(true)
+        if (!closed.compareAndSet(false, true)) return
         syncThread?.interrupt()
         runCatching { socket?.close() }
         socket = null
-        recentFrames.clear()
+        synchronized(frameLock) { recentFrames.clear() }
         synchronized(resendCache) { resendCache.clear() }
         Log.i(
             TAG,

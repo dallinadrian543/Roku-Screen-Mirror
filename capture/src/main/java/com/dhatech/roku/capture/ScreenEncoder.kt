@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import java.io.Closeable
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Captures the screen into a hardware H.264 encoder and emits access units.
@@ -29,10 +30,8 @@ import java.nio.ByteBuffer
  * Rotation is handled by rebuilding the encoder at the swapped dimensions and
  * resizing the virtual display: a MediaCodec cannot be reconfigured in place,
  * and the fresh SPS/PPS it emits re-primes the receiver's decoder on its own.
- *
- * The projection must already be authorised, and on API 34+ a foreground service
- * of type `mediaProjection` has to be running before the capture starts.
  */
+@Suppress("TooManyFunctions")
 class ScreenEncoder(
     context: Context,
     private val projection: MediaProjection,
@@ -47,6 +46,9 @@ class ScreenEncoder(
         context.applicationContext.getSystemService(DisplayManager::class.java)
     private val display: Display? = displayManager?.getDisplay(Display.DEFAULT_DISPLAY)
     private val densityDpi = context.applicationContext.resources.displayMetrics.densityDpi
+
+    private val codecLock = Any()
+    private val closed = AtomicBoolean(false)
 
     private var codec: MediaCodec? = null
     private var inputSurface: Surface? = null
@@ -70,6 +72,7 @@ class ScreenEncoder(
 
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayChanged(displayId: Int) {
+            if (closed.get()) return
             val current = displayManager?.getDisplay(Display.DEFAULT_DISPLAY) ?: return
             if (displayId != current.displayId) return
             if (current.rotation == currentRotation) return
@@ -86,47 +89,47 @@ class ScreenEncoder(
     /**
      * Starts capture and emits every access unit. Cancelling the collector tears
      * the whole pipeline down.
-     *
-     * Buffered rather than conflated: dropping a frame that a later P-frame
-     * references would corrupt the stream until the next IDR.
      */
+    @Suppress("LongMethod")
     fun frames(): Flow<EncodedFrame> = callbackFlow {
         val thread = HandlerThread("kite-encoder").apply { start() }
-        callbackThread = thread
         val encoderHandler = Handler(thread.looper)
-        handler = encoderHandler
 
         val callback = object : MediaProjection.Callback() {
             override fun onStop() {
-                // The user revoked the capture permission from the system UI.
                 Log.i(TAG, "MediaProjection stopped by the system")
                 close()
             }
         }
-        projectionCallback = callback
-
-        val encoder = MediaCodec.createEncoderByType(MIME_H264)
-        codec = encoder
 
         val callbackHandler = object : MediaCodec.Callback() {
-            override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
-                // Unused: input arrives through the Surface.
-            }
+            override fun onInputBufferAvailable(codec: MediaCodec, index: Int) = Unit
 
             override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-                try {
-                    val buffer = codec.getOutputBuffer(index)
-                    if (buffer != null && info.size > 0) {
-                        emit(buffer, info)?.let { trySend(it) }
+                var emitted: EncodedFrame? = null
+                synchronized(codecLock) {
+                    if (closed.get() || this@ScreenEncoder.codec !== codec) return
+                    try {
+                        val buffer = codec.getOutputBuffer(index)
+                        if (buffer != null && info.size > 0) {
+                            emitted = emit(buffer, info)
+                        }
+                    } catch (e: IllegalStateException) {
+                        Log.w(TAG, "Output buffer $index went away", e)
+                    } finally {
+                        runCatching { codec.releaseOutputBuffer(index, false) }
                     }
-                } catch (e: IllegalStateException) {
-                    Log.w(TAG, "Output buffer $index went away", e)
-                } finally {
-                    runCatching { codec.releaseOutputBuffer(index, false) }
+                }
+                emitted?.let { frame ->
+                    val sendResult = trySend(frame)
+                    if (!sendResult.isSuccess && !closed.get()) {
+                        Log.d(TAG, "Encoder channel full; dropping frame")
+                    }
                 }
             }
 
             override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
+                if (closed.get()) return
                 Log.e(TAG, "Encoder error (recoverable=${e.isRecoverable})", e)
                 close(e)
             }
@@ -135,34 +138,39 @@ class ScreenEncoder(
                 Log.i(TAG, "Encoder output format: $format")
             }
         }
-        codecCallback = callbackHandler
-
-        encoder.setCallback(
-            callbackHandler,
-            encoderHandler,
-        )
 
         try {
-            configureEncoder(encoder, currentFormat)
-            val surface = encoder.createInputSurface()
-            inputSurface = surface
+            synchronized(codecLock) {
+                check(!closed.get()) { "Encoder closed before start" }
+                callbackThread = thread
+                handler = encoderHandler
+                projectionCallback = callback
+                codecCallback = callbackHandler
 
-            projection.registerCallback(callback, encoderHandler)
-            displayManager?.registerDisplayListener(displayListener, encoderHandler)
-            currentRotation = display?.rotation ?: Surface.ROTATION_0
+                val encoder = MediaCodec.createEncoderByType(MIME_H264)
+                codec = encoder
+                encoder.setCallback(callbackHandler, encoderHandler)
+                configureEncoder(encoder, currentFormat)
+                val surface = encoder.createInputSurface()
+                inputSurface = surface
 
-            virtualDisplay = projection.createVirtualDisplay(
-                VIRTUAL_DISPLAY_NAME,
-                currentFormat.width,
-                currentFormat.height,
-                densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                surface,
-                null,
-                encoderHandler,
-            ) ?: throw IllegalStateException("createVirtualDisplay returned null")
+                projection.registerCallback(callback, encoderHandler)
+                displayManager?.registerDisplayListener(displayListener, encoderHandler)
+                currentRotation = display?.rotation ?: Surface.ROTATION_0
 
-            encoder.start()
+                virtualDisplay = projection.createVirtualDisplay(
+                    VIRTUAL_DISPLAY_NAME,
+                    currentFormat.width,
+                    currentFormat.height,
+                    densityDpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    surface,
+                    null,
+                    encoderHandler,
+                ) ?: throw IllegalStateException("createVirtualDisplay returned null")
+
+                encoder.start()
+            }
             Log.i(
                 TAG,
                 "Capturing ${currentFormat.width}x${currentFormat.height}" +
@@ -174,8 +182,6 @@ class ScreenEncoder(
         }
 
         awaitClose {
-            runCatching { displayManager?.unregisterDisplayListener(displayListener) }
-            runCatching { projection.unregisterCallback(callback) }
             releaseResources()
         }
     }
@@ -225,10 +231,6 @@ class ScreenEncoder(
         setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, STATIC_FRAME_REPEAT_US)
     }
 
-    /**
-     * Configures the codec, progressively falling back from custom bitrate modes,
-     * low-latency hints, and AVC Level 5.2 to baseline VBR Level 4.1 when hardware rejects them.
-     */
     private fun configureEncoder(encoder: MediaCodec, target: VideoFormat) {
         val attempts = listOf(
             Triple(true, true, true),
@@ -254,91 +256,102 @@ class ScreenEncoder(
         throw lastError ?: IllegalStateException("Unable to configure H.264 encoder")
     }
 
-    /**
-     * Rebuilds the encoder for the post-rotation dimensions.
-     *
-     * The new encoder is started before the old one is torn down, so a failure
-     * anywhere leaves the old pipeline intact except for the moment its surface
-     * is detached — and that is restored in the failure path.
-     */
+    // Guard clauses exit early inside codecLock when closed, uninitialized, or size unchanged.
+    @Suppress("ReturnCount")
     private fun rebuildForRotation() {
-        val screen = display
-        val virtualDisplay = virtualDisplay
-        val oldCodec = codec
-        val oldSurface = inputSurface
-        if (screen == null || virtualDisplay == null) return
-        if (oldCodec == null || oldSurface == null) return
+        var notifySize: Pair<Int, Int>? = null
+        synchronized(codecLock) {
+            if (closed.get()) return
+            val screen = display ?: return
+            val activeDisplay = virtualDisplay ?: return
+            val oldCodec = codec ?: return
+            val oldSurface = inputSurface ?: return
 
-        val (realWidth, realHeight) = screen.realSize()
-        val rotated = VideoFormat.forDisplay(
-            displayWidth = realWidth,
-            displayHeight = realHeight,
-            maxLongEdge = maxLongEdge,
-            frameRate = format.frameRate,
-            bitRate = bitRateOverride,
-        ).copy(
-            keyFrameIntervalSeconds = format.keyFrameIntervalSeconds,
-            bitrateMode = format.bitrateMode,
-            lowLatency = format.lowLatency,
-            drmCompatibilityMode = format.drmCompatibilityMode,
-        )
-        if (rotated.width == currentFormat.width && rotated.height == currentFormat.height) return
+            val (realWidth, realHeight) = screen.realSize()
+            if (realWidth <= 0 || realHeight <= 0) return
 
-        Log.i(
-            TAG,
-            "Rotation: rebuilding encoder ${currentFormat.width}x${currentFormat.height}" +
-                " -> ${rotated.width}x${rotated.height}",
-        )
-        runCatching {
-            val newCodec = MediaCodec.createEncoderByType(MIME_H264)
-            configureEncoder(newCodec, rotated)
-            val newSurface = newCodec.createInputSurface()
-            newCodec.setCallback(
-                codecCallback ?: error("encoder callback unavailable"),
-                handler,
+            val rotated = VideoFormat.forDisplay(
+                displayWidth = realWidth,
+                displayHeight = realHeight,
+                maxLongEdge = maxLongEdge,
+                frameRate = format.frameRate,
+                bitRate = bitRateOverride,
+            ).copy(
+                keyFrameIntervalSeconds = format.keyFrameIntervalSeconds,
+                bitrateMode = format.bitrateMode,
+                lowLatency = format.lowLatency,
+                drmCompatibilityMode = format.drmCompatibilityMode,
             )
-            newCodec.start()
+            if (rotated.width == currentFormat.width && rotated.height == currentFormat.height) return
 
-            virtualDisplay.setSurface(null)
-            runCatching { oldCodec.stop() }
-            runCatching { oldCodec.release() }
-            runCatching { oldSurface.release() }
-            codec = newCodec
-            inputSurface = newSurface
-            currentFormat = rotated
+            Log.i(
+                TAG,
+                "Rotation: rebuilding encoder ${currentFormat.width}x${currentFormat.height}" +
+                    " -> ${rotated.width}x${rotated.height}",
+            )
+            var newCodec: MediaCodec? = null
+            var newSurface: Surface? = null
+            runCatching {
+                val created = MediaCodec.createEncoderByType(MIME_H264).also { newCodec = it }
+                configureEncoder(created, rotated)
+                val createdSurface = created.createInputSurface().also { newSurface = it }
+                created.setCallback(
+                    codecCallback ?: error("encoder callback unavailable"),
+                    handler,
+                )
+                created.start()
 
-            virtualDisplay.resize(rotated.width, rotated.height, densityDpi)
-            virtualDisplay.setSurface(newSurface)
-            onDimensionsChanged?.invoke(rotated.width, rotated.height)
-        }.onFailure { error ->
-            Log.e(TAG, "Rotation rebuild failed; restoring the old capture", error)
-            runCatching { virtualDisplay.setSurface(oldSurface) }
+                activeDisplay.setSurface(null)
+                runCatching { oldCodec.stop() }
+                runCatching { oldCodec.release() }
+                runCatching { oldSurface.release() }
+                codec = created
+                inputSurface = createdSurface
+                currentFormat = rotated
+
+                activeDisplay.resize(rotated.width, rotated.height, densityDpi)
+                activeDisplay.setSurface(createdSurface)
+                notifySize = rotated.width to rotated.height
+            }.onFailure { error ->
+                Log.e(TAG, "Rotation rebuild failed; restoring the old capture", error)
+                runCatching { newCodec?.stop() }
+                runCatching { newCodec?.release() }
+                runCatching { newSurface?.release() }
+                runCatching { activeDisplay.setSurface(oldSurface) }
+            }
         }
+        notifySize?.let { (w, h) -> onDimensionsChanged?.invoke(w, h) }
     }
 
     /** Forces an IDR frame, which is how the receiver recovers after a stall. */
     fun requestKeyFrame() {
-        runCatching {
-            codec?.setParameters(
-                android.os.Bundle().apply {
-                    putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
-                },
-            )
-        }.onFailure { Log.w(TAG, "Key frame request failed", it) }
+        synchronized(codecLock) {
+            if (closed.get()) return
+            runCatching {
+                codec?.setParameters(
+                    android.os.Bundle().apply {
+                        putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+                    },
+                )
+            }.onFailure { Log.w(TAG, "Key frame request failed", it) }
+        }
     }
 
     /** Adjusts bitrate mid-session; used when the send queue starts backing up. */
     fun setBitRate(bitsPerSecond: Int) {
-        runCatching {
-            codec?.setParameters(
-                android.os.Bundle().apply {
-                    putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bitsPerSecond)
-                },
-            )
-        }.onFailure { Log.w(TAG, "Bitrate change failed", it) }
+        synchronized(codecLock) {
+            if (closed.get()) return
+            runCatching {
+                codec?.setParameters(
+                    android.os.Bundle().apply {
+                        putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bitsPerSecond)
+                    },
+                )
+            }.onFailure { Log.w(TAG, "Bitrate change failed", it) }
+        }
     }
 
-    private fun emit(buffer: ByteBuffer, info: MediaCodec.BufferInfo): EncodedFrame? {
+    private fun emit(buffer: ByteBuffer, info: MediaCodec.BufferInfo): EncodedFrame {
         val isConfig = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
         val isKeyFrame = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
 
@@ -355,16 +368,26 @@ class ScreenEncoder(
     }
 
     private fun releaseResources() {
-        runCatching { virtualDisplay?.release() }
-        runCatching { codec?.stop() }
-        runCatching { codec?.release() }
-        runCatching { inputSurface?.release() }
-        runCatching { callbackThread?.quitSafely() }
-        virtualDisplay = null
-        codec = null
-        inputSurface = null
-        callbackThread = null
-        handler = null
+        if (!closed.compareAndSet(false, true)) return
+        runCatching { displayManager?.unregisterDisplayListener(displayListener) }
+        projectionCallback?.let { cb -> runCatching { projection.unregisterCallback(cb) } }
+        projectionCallback = null
+
+        val threadToQuit: HandlerThread?
+        synchronized(codecLock) {
+            runCatching { virtualDisplay?.release() }
+            runCatching { codec?.stop() }
+            runCatching { codec?.release() }
+            runCatching { inputSurface?.release() }
+            virtualDisplay = null
+            codec = null
+            inputSurface = null
+            threadToQuit = callbackThread
+            callbackThread = null
+            handler = null
+            codecCallback = null
+        }
+        runCatching { threadToQuit?.quitSafely() }
     }
 
     override fun close() = releaseResources()

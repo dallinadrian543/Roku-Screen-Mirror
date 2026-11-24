@@ -390,6 +390,54 @@ object ModernSetupRequests {
     }
 
     /**
+     * Compatibility screen-audio SETUP for AirPlay 2 receivers (such as Roku OS)
+     * that reject `supportsDynamicStreamID`, `redundantAudio`, or `streamConnections`
+     * in the full doubletake descriptor.
+     */
+    fun modernAudioSetupCompat(
+        streamConnectionId: Long,
+        shk: ByteArray,
+        controlPort: Int,
+        uri: String,
+        useStreamConnections: Boolean = true,
+    ): RtspRequest {
+        val stream = plistDict {
+            "type" to STREAM_TYPE_AUDIO
+            "streamConnectionID" to streamConnectionId
+            "ct" to 2
+            "spf" to 352
+            "sr" to 44100
+            "audioFormat" to (1L shl 18)
+            "audioMode" to "default"
+            "usingScreen" to true
+            "isMedia" to false
+            "latencyMin" to 0
+            "latencyMax" to 3748
+            "controlPort" to controlPort
+            "shk" to shk
+            if (useStreamConnections) {
+                "streamConnections" to plistDict {
+                    "streamConnectionTypeRTP" to plistDict {
+                        "streamConnectionKeyUseStreamEncryptionKey" to true
+                    }
+                    "streamConnectionTypeRTCP" to plistDict {
+                        "streamConnectionKeyPort" to controlPort
+                    }
+                }
+            }
+        }
+        val body = plistDict {
+            "streams" to PlistValue.Array(listOf(stream))
+        }
+        return RtspRequest(
+            method = "SETUP",
+            uri = uri,
+            headers = mapOf("Content-Type" to CONTENT_TYPE_PLIST),
+            body = BinaryPlistWriter.write(body),
+        )
+    }
+
+    /**
      * SET_PARAMETER volume=0 (doubletake audioVolumeBody(false)): real senders
      * set the receiver's audio volume after the audio SETUP — twice in captured
      * pcaps — and 0 dB is the sender's fixed choice. Positive dB values are

@@ -24,9 +24,13 @@ import kotlinx.coroutines.launch
 data class DiscoveryUiState(
     val receivers: List<AirPlayReceiver> = emptyList(),
     val pairedIds: Set<String> = emptySet(),
+    val selectedEndpointKey: String? = null,
     val isSearching: Boolean = true,
     val discoveryError: String? = null,
-)
+) {
+    val selectedReceiver: AirPlayReceiver?
+        get() = receivers.firstOrNull { it.endpointKey == selectedEndpointKey }
+}
 
 @Suppress("TooManyFunctions")
 class MirrorViewModel(application: Application) : AndroidViewModel(application) {
@@ -35,6 +39,7 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
 
     private val pairedIdsState = MutableStateFlow<Set<String>>(emptySet())
     private val discoveryErrorState = MutableStateFlow<String?>(null)
+    private val selectedEndpointKeyState = MutableStateFlow<String?>(null)
 
     val settings: StateFlow<MirrorSettings> = app.settingsRepository.settings.stateIn(
         scope = viewModelScope,
@@ -59,6 +64,8 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
     val manualConnectError: StateFlow<String?> = _manualConnectError.asStateFlow()
 
     var pendingReceiver: AirPlayReceiver? = null
+    var pendingAudioOnly: Boolean = false
+    var pendingVideoOnly: Boolean = false
 
     val sessionState: StateFlow<SessionState> = MirrorController.state
 
@@ -70,10 +77,18 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
         },
         pairedIdsState,
         discoveryErrorState,
-    ) { receivers, paired, error ->
+        selectedEndpointKeyState,
+    ) { receivers, paired, error, explicitKey ->
+        val connectable = receivers.filter { it.supportsMirroring || it.isAudioOnly }
+        val resolvedKey = when {
+            explicitKey != null && connectable.any { it.endpointKey == explicitKey } -> explicitKey
+            connectable.size == 1 -> connectable.first().endpointKey
+            else -> null
+        }
         DiscoveryUiState(
             receivers = receivers,
             pairedIds = paired,
+            selectedEndpointKey = resolvedKey,
             isSearching = receivers.isEmpty() && error == null,
             discoveryError = error,
         )
@@ -98,6 +113,10 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
         discoveryErrorState.value = null
         app.discovery.refresh()
         app.audioRouting.refresh()
+    }
+
+    fun selectReceiver(receiver: AirPlayReceiver) {
+        selectedEndpointKeyState.value = receiver.endpointKey
     }
 
     fun addManualReceiver(host: String, port: Int?, onFound: (AirPlayReceiver) -> Unit) {

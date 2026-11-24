@@ -115,14 +115,18 @@ class RtspClient(
      * the socket closes, so an unread response is harmless.
      */
     fun writeOnly(request: RtspRequest) {
-        val out = rawOutput ?: return
+        if (encrypted != null) return
+        if (!lock.tryLock()) return
         try {
+            val out = rawOutput ?: return
             val wire = withPreemptiveAuth(request)
             val cseq = 0 // the request is terminal; the receiver closes anyway
             out.write(wire.encode(cseq, defaultHeaders()))
             out.flush()
         } catch (e: Exception) {
             Log.d(TAG, "write-only ${request.method} failed: ${e.message}")
+        } finally {
+            lock.unlock()
         }
     }
 
@@ -275,7 +279,6 @@ class RtspClient(
         (sessionId.hashCode().toLong() and 0xFFFFFFFFL).toString()
 
     override fun close() {
-        runCatching { rawOutput?.flush() }
         runCatching { socket?.close() }
         socket = null
         rawInput = null

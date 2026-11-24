@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import java.io.Closeable
+import java.util.concurrent.atomic.AtomicBoolean
 import android.media.AudioFormat as AndroidAudioFormat
 
 /**
@@ -32,6 +33,9 @@ class AudioPcmSource(
     private val chunkBytes: Int,
 ) : Closeable {
 
+    private val released = AtomicBoolean(false)
+
+    @Volatile
     private var record: AudioRecord? = null
 
     @Volatile
@@ -39,9 +43,13 @@ class AudioPcmSource(
 
     @SuppressLint("MissingPermission") // Playback capture is authorised by the projection.
     fun frames(): Flow<ByteArray> = callbackFlow {
-        val audioRecord = createAudioRecord()
-        record = audioRecord
         try {
+            val audioRecord = createAudioRecord()
+            if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
+                runCatching { audioRecord.release() }
+                throw IllegalStateException("AudioRecord failed to initialize (state=${audioRecord.state})")
+            }
+            record = audioRecord
             audioRecord.startRecording()
             isCapturing = true
             Log.i(
@@ -50,8 +58,11 @@ class AudioPcmSource(
             )
             val buffer = ByteArray(chunkBytes)
             while (isCapturing) {
-                val read = runCatching { audioRecord.read(buffer, 0, buffer.size) }.getOrElse { error ->
-                    Log.w(TAG, "AudioRecord read failed", error)
+                val read = runCatching { audioRecord.read(buffer, 0, buffer.size) }
+                    .onFailure { Log.w(TAG, "AudioRecord read failed", it) }
+                    .getOrDefault(-1)
+                if (read < 0) {
+                    Log.w(TAG, "AudioRecord read stopped (code=$read); ending PCM capture")
                     break
                 }
                 if (read == buffer.size) {
@@ -65,12 +76,7 @@ class AudioPcmSource(
             close(e)
         }
 
-        awaitClose {
-            isCapturing = false
-            runCatching { audioRecord.stop() }
-            runCatching { audioRecord.release() }
-            record = null
-        }
+        awaitClose { close() }
     }.flowOn(Dispatchers.IO)
 
     private fun createAudioRecord(): AudioRecord {
@@ -107,8 +113,10 @@ class AudioPcmSource(
 
     override fun close() {
         isCapturing = false
-        runCatching { record?.stop() }
-        runCatching { record?.release() }
+        if (!released.compareAndSet(false, true)) return
+        val active = record
+        runCatching { active?.stop() }
+        runCatching { active?.release() }
         record = null
     }
 

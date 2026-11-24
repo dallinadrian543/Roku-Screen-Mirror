@@ -72,7 +72,8 @@ class AudioControlServer : Closeable {
         val data = packet.data
         val requestSeq = ((data[2].toInt() and 0xFF) shl 8) or (data[3].toInt() and 0xFF)
         val startSeq = ((data[4].toInt() and 0xFF) shl 8) or (data[5].toInt() and 0xFF)
-        val count = ((data[6].toInt() and 0xFF) shl 8) or (data[7].toInt() and 0xFF)
+        val count = (((data[6].toInt() and 0xFF) shl 8) or (data[7].toInt() and 0xFF))
+            .coerceIn(0, MAX_RESEND_COUNT)
         val cached = onResend?.invoke(startSeq, count).orEmpty()
         cached.forEach { reply(packet, requestSeq, it) }
         // One line per burst would flood the log on a lossy network.
@@ -113,5 +114,6 @@ class AudioControlServer : Closeable {
         const val RESEND_HEADER_BYTES = 4
         const val RESEND_LOG_INTERVAL = 100L
         const val JOIN_TIMEOUT_MS = 300L
+        const val MAX_RESEND_COUNT = 500
     }
 }

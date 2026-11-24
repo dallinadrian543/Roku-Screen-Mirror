@@ -36,6 +36,7 @@ class ModernAudioStream(
     private val streamKey: ByteArray,
     private val clock: MirrorClock,
     private val timelineId: Long,
+    private val usePtpSync: Boolean = timelineId != 0L,
 ) {
 
     // Mirroring audio RTP uses SSRC=0 (doubletake); the receiver does not
@@ -45,6 +46,7 @@ class ModernAudioStream(
     private val seq = AtomicLong(1)
     private val nonceCounter = AtomicLong(0)
     private val latencySamples = 3748
+    private val closed = AtomicBoolean(false)
 
     /** seq → history entry; feeds redundancy blocks and retransmits. */
     private val history = LinkedHashMap<Int, HistoryEntry>()
@@ -79,7 +81,7 @@ class ModernAudioStream(
         // 0xd5 requests with 0xd6-wrapped originals from the history ring.
         Thread {
             val buf = ByteArray(1024)
-            while (!controlSocket.isClosed) {
+            while (!closed.get() && !controlSocket.isClosed) {
                 val packet = DatagramPacket(buf, buf.size)
                 runCatching { controlSocket.receive(packet) }.onFailure { return@Thread }
                 answerRetransmit(packet.data, packet.address, packet.port)
@@ -94,7 +96,7 @@ class ModernAudioStream(
         // seeds the mapping; without the periodic refresh the receiver's
         // playout approximation drifts until it stops rendering.
         Thread {
-            while (!controlSocket.isClosed) {
+            while (!closed.get() && !controlSocket.isClosed) {
                 try {
                     Thread.sleep(SYNC_INTERVAL_MS)
                 } catch (e: InterruptedException) {
@@ -110,39 +112,75 @@ class ModernAudioStream(
 
     fun refreshSync() {
         // Before the first frame there is no anchored mapping to refresh.
-        if (!announcedFirst.get()) return
+        if (!announcedFirst.get() || closed.get()) return
         sendSyncPacket(isFirst = false)
     }
 
     /**
-     * TimeAnnounce (doubletake sendSyncPacketAt, PTP variant): maps the audio
-     * playhead RTP position onto the receiver's PTP timeline. Bytes 8–16 carry
-     * the clock value as PTP NANOSECONDS (doubletake ptpNanoseconds), not the
-     * wire's usual 32.32 compact form.
+     * TimeAnnounce: sends the PTP variant (0xd7, 28 bytes) when [usePtpSync] is
+     * enabled with a valid receiver ClockID, or the standard NTP variant (0xd4,
+     * 20 bytes, 1900 epoch) when falling back to NTP timing.
      */
     fun sendSyncPacket(isFirst: Boolean) {
+        if (closed.get() || remoteControlPort <= 0) return
         // rtpTime points at the NEXT frame (getAndAdd reserves each frame's
         // position); the last sent frame is one step back, matching doubletake
         // keeping as.rtpTime on the newest transmitted frame.
         val lastSentRtp = rtpTime.get().toInt() - SAMPLES_PER_FRAME.toInt()
+        val playheadRtp = lastSentRtp - latencySamples
+        val packet = if (usePtpSync) {
+            buildPtpSyncPacket(isFirst, playheadRtp)
+        } else {
+            buildNtpSyncPacket(isFirst, playheadRtp, lastSentRtp)
+        }
+        runCatching {
+            controlSocket.send(DatagramPacket(packet, packet.size, remoteAddress, remoteControlPort))
+        }.onFailure { error ->
+            if (!closed.get()) Log.w(TAG, "Audio sync packet failed", error)
+        }
+    }
+
+    private fun buildPtpSyncPacket(isFirst: Boolean, playheadRtp: Int): ByteArray {
         val packet = ByteArray(28)
         packet[0] = if (isFirst) 0x90.toByte() else 0x80.toByte() // V=2, X=1 on the first
         packet[1] = 0xd7.toByte() // TimeAnnounce, PTP flavour
         packet[2] = 0x00
         packet[3] = 0x04 // seq field is constant 4 in working captures
-        val playheadRtp = lastSentRtp - latencySamples
-        for (i in 0 until 4) packet[4 + i] = (playheadRtp shr (24 - 8 * i)).toByte()
+        writeIntBE(packet, 4, playheadRtp)
         val networkTime = clock.now()
         val seconds = networkTime ushr 32
         val fraction = networkTime and 0xFFFFFFFFL
         val ptpNanos = seconds * 1_000_000_000L + (fraction * 1_000_000_000L shr 32)
         for (i in 0 until 8) packet[8 + i] = (ptpNanos ushr (56 - 8 * i)).toByte()
-        for (i in 0 until 4) packet[16 + i] = (playheadRtp shr (24 - 8 * i)).toByte()
+        writeIntBE(packet, 16, playheadRtp)
         for (i in 0 until 8) packet[20 + i] = (timelineId ushr (56 - 8 * i)).toByte()
-        controlSocket.send(DatagramPacket(packet, packet.size, remoteAddress, remoteControlPort))
+        return packet
+    }
+
+    private fun buildNtpSyncPacket(isFirst: Boolean, playheadRtp: Int, currentRtp: Int): ByteArray {
+        val packet = ByteArray(20)
+        packet[0] = if (isFirst) 0x90.toByte() else 0x80.toByte()
+        packet[1] = 0xd4.toByte()
+        packet[2] = 0x00
+        packet[3] = 0x07
+        writeIntBE(packet, 4, playheadRtp)
+        val nowMillis = System.currentTimeMillis()
+        val ntp = (((nowMillis / 1_000) + NTP_UNIX_OFFSET_SECONDS) shl 32) or
+            (((nowMillis % 1_000) * (1L shl 32) / 1_000) and 0xFFFFFFFFL)
+        for (i in 0 until 8) packet[8 + i] = (ntp ushr (56 - 8 * i)).toByte()
+        writeIntBE(packet, 16, currentRtp)
+        return packet
+    }
+
+    private fun writeIntBE(dst: ByteArray, offset: Int, value: Int) {
+        dst[offset] = (value ushr 24).toByte()
+        dst[offset + 1] = (value ushr 16).toByte()
+        dst[offset + 2] = (value ushr 8).toByte()
+        dst[offset + 3] = value.toByte()
     }
 
     fun sendDataFrame(frame: ByteArray) {
+        if (closed.get()) return
         // RTP advances one ELD frame per frame (doubletake frameRTP += spf);
         // the first frame uses the random epoch itself.
         val rtp = rtpTime.getAndAdd(SAMPLES_PER_FRAME).toInt()
@@ -216,7 +254,8 @@ class ModernAudioStream(
         if (request.size < 8 || (request[1].toInt() and 0xFF) != 0xD5) return
         val requestSeq = ((request[2].toInt() and 0xFF) shl 8) or (request[3].toInt() and 0xFF)
         val first = ((request[4].toInt() and 0xFF) shl 8) or (request[5].toInt() and 0xFF)
-        val count = ((request[6].toInt() and 0xFF) shl 8) or (request[7].toInt() and 0xFF)
+        val rawCount = ((request[6].toInt() and 0xFF) shl 8) or (request[7].toInt() and 0xFF)
+        val count = rawCount.coerceIn(0, RETRANSMIT_HISTORY)
         for (offset in 0 until count) {
             val seqNum = (first + offset) and 0xFFFF
             val original = synchronized(historyLock) { history[seqNum]?.datagram }
@@ -266,11 +305,17 @@ class ModernAudioStream(
     }
 
     private fun send(packet: ByteArray, remotePort: Int) {
-        dataSocket.send(DatagramPacket(packet, packet.size, remoteAddress, remotePort))
+        if (closed.get()) return
+        runCatching {
+            dataSocket.send(DatagramPacket(packet, packet.size, remoteAddress, remotePort))
+        }.onFailure { error ->
+            if (!closed.get()) Log.w(TAG, "Audio RTP send failed", error)
+        }
     }
 
     /** Closes both UDP sockets; the control listener thread exits on receive error. */
     fun close() {
+        if (!closed.compareAndSet(false, true)) return
         runCatching { dataSocket.close() }
         runCatching { controlSocket.close() }
     }
@@ -289,5 +334,6 @@ class ModernAudioStream(
         /** ALAC frame length; the RTP timestamp step. */
         const val SAMPLES_PER_FRAME = 352L
         private const val PRIMARY_PAYLOAD_TYPE = 0x60
+        private const val NTP_UNIX_OFFSET_SECONDS = 2_208_988_800L
     }
 }

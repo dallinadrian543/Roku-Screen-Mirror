@@ -44,6 +44,7 @@ import java.io.Closeable
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 
 /**
@@ -124,6 +125,8 @@ class MirrorSession(
 
     /** Shared secret from a raw (plaintext) pairing; there are no control keys. */
     private var rawSharedSecret: ByteArray? = null
+
+    private var isRokuReceiver: Boolean = receiver.isRoku
 
     /** Previous sample, so [refreshStatistics] can turn totals into a rate. */
     private var lastStatsBytes = 0L
@@ -280,6 +283,7 @@ class MirrorSession(
             videoEnabled = videoEnabled,
             lowLatencyMode = lowLatencyMode,
             fairPlaySupported = fairPlayResult.supported,
+            isRoku = isRokuReceiver,
         )
         modernSetup = setup
         skipRecord = result.skipRecord
@@ -344,6 +348,7 @@ class MirrorSession(
             .getOrNull()
         val features = FeatureFlags(receiver.features.raw or (info?.features ?: 0L))
         val isRoku = info?.isRoku ?: receiver.isRoku
+        isRokuReceiver = isRoku
         Log.i(TAG, "[PAIR] pairing path: HAP (features=0x%X, roku=$isRoku)".format(features.raw))
 
         val stored = credentialStore.load(receiver.stableId)
@@ -930,41 +935,71 @@ class MirrorSession(
      * request in flight. A failure here is not fatal on its own — the receiver
      * decides when to give up — so it is logged and retried on the next tick.
      */
+    private val closed = AtomicBoolean(false)
+
     private fun startFeedbackLoop(client: RtspClient) {
         feedbackJob?.cancel()
         feedbackJob = scope.launch {
-            // A dead receiver times out the feedback POST repeatedly; two
-            // consecutive failures mean it is gone (the RTSP read timeout is
-            // 15 s, so this adds at most ~30 s of grace before declaring it).
             var feedbackFailures = 0
-            while (isActive && client.isConnected) {
+            while (isActive && client.isConnected && !closed.get()) {
                 delay(FEEDBACK_INTERVAL_MS)
-                if (!isActive || !client.isConnected) break
-                // Modern sessions also carry the data-channel keepalive the
-                // reference sends every second (doubletake dataHeartbeatLoop).
-                // A receiver that stopped mirroring resets this TCP channel; the
-                // write then throws within a tick or two. That must end the
-                // session gracefully — an unguarded throw here kills the whole
-                // process, which is exactly what it used to do.
-                runCatching { stream?.sendHeartbeat() }
-                    .onFailure { error ->
-                        Log.w(TAG, "Data channel heartbeat failed; receiver is gone", error)
-                        onConnectionLost?.invoke(error)
-                        return@launch
-                    }
-                runCatching { client.send(SetupRequests.feedback()) }
-                    .onFailure { error ->
-                        feedbackFailures++
-                        if (feedbackFailures >= 2) {
-                            Log.w(TAG, "Feedback failed twice; receiver is gone", error)
-                            onConnectionLost?.invoke(error)
-                            return@launch
-                        }
-                        Log.w(TAG, "Feedback request failed ($feedbackFailures)", error)
-                    }
-                    .onSuccess { feedbackFailures = 0 }
+                if (!isActive || !client.isConnected || closed.get()) break
+                if (!sendDataHeartbeat()) return@launch
+                val response = runCatching { client.send(SetupRequests.feedback()) }
+                val nextFailures = evaluateFeedbackResult(response, feedbackFailures) ?: return@launch
+                feedbackFailures = nextFailures
             }
         }
+    }
+
+    private fun sendDataHeartbeat(): Boolean {
+        val result = runCatching { stream?.sendHeartbeat() }
+        result.onFailure { error ->
+            if (!closed.get()) {
+                Log.w(TAG, "Data channel heartbeat failed; receiver is gone", error)
+                onConnectionLost?.invoke(error)
+            }
+        }
+        return result.isSuccess
+    }
+
+    /**
+     * Evaluates one `/feedback` result, returning the updated failure count or
+     * null when the loop should terminate after notifying [onConnectionLost].
+     */
+    @Suppress("ReturnCount")
+    private fun evaluateFeedbackResult(result: Result<RtspResponse>, previousFailures: Int): Int? {
+        result.onFailure { error ->
+            if (closed.get()) return null
+            val failures = previousFailures + 1
+            if (failures >= 2) {
+                Log.w(TAG, "Feedback failed twice; receiver is gone", error)
+                onConnectionLost?.invoke(error)
+                return null
+            }
+            Log.w(TAG, "Feedback request failed ($failures)", error)
+            return failures
+        }
+        val response = result.getOrNull() ?: return previousFailures
+        if (response.statusCode in FATAL_FEEDBACK_CODES) {
+            val err = RtspException(
+                "Feedback rejected: ${response.statusCode} ${response.reason}",
+                response.statusCode,
+            )
+            Log.w(TAG, "Receiver ended session during feedback (${response.statusCode})")
+            onConnectionLost?.invoke(err)
+            return null
+        }
+        if (response.isSuccess || response.statusCode in BENIGN_FEEDBACK_CODES) return 0
+        val failures = previousFailures + 1
+        Log.w(TAG, "Unexpected feedback status ${response.statusCode} ($failures)")
+        if (failures >= 2) {
+            onConnectionLost?.invoke(
+                RtspException("Feedback failed: ${response.statusCode} ${response.reason}", response.statusCode),
+            )
+            return null
+        }
+        return failures
     }
 
     private fun octetStream(uri: String, body: ByteArray, et: Boolean = false): RtspRequest = RtspRequest(
@@ -1102,15 +1137,15 @@ class MirrorSession(
     private fun formatKbps(kbps: Long): String = if (kbps >= 10_000) "%.1f Mbps".format(kbps / 1000.0) else "$kbps kbps"
 
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
         // Stop the heartbeat before TEARDOWN so it cannot race the closing socket.
         feedbackJob?.cancel()
         feedbackJob = null
         val client = rtsp
         val deviceId = receiver.deviceId ?: sessionUuid
         if (client?.isConnected == true) {
-            // Fire-and-forget: reading the response would block the caller (the
-            // main service thread) for up to the read timeout on receivers that
-            // just walked away. The receiver also tears down when we close.
+            // Fire-and-forget: reading the response would block the caller for up
+            // to the read timeout on receivers that just walked away.
             runCatching { client.writeOnly(SetupRequests.teardown(deviceId, sessionUuid)) }
                 .onFailure { Log.d(TAG, "TEARDOWN did not complete", it) }
         }
@@ -1180,6 +1215,8 @@ class MirrorSession(
         private const val NANOS_PER_SECOND = 1_000_000_000L
 
         private val FAIRPLAY_UNSUPPORTED_CODES = setOf(404, 405, 501)
+        private val BENIGN_FEEDBACK_CODES = setOf(404, 405, 501)
+        private val FATAL_FEEDBACK_CODES = setOf(408, 454)
         private val STALE_PAIRING_HTTP_CODES = setOf(400, 401, 403)
         private val THROTTLING_TLV_ERRORS = setOf(TlvError.BACKOFF, TlvError.MAX_TRIES, TlvError.MAX_PEERS)
 

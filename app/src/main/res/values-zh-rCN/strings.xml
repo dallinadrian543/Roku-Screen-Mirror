@@ -106,4 +106,8 @@
     <string name="error_pairing_throttled">接收端因多次失败进入限流。请关闭再打开其 AirPlay 接收功能（或等约 30 分钟）后重试。</string>
     <string name="manual_port_auto_chip">自动选择 AirPlay 端口</string>
     <string name="manual_port_auto_summary">自动检测 7000、7100、5000、49152 和 7001 端口</string>
+    <string name="action_cast_to">投屏到 %1$s</string>
+    <string name="action_choose_device">选择要投屏的设备</string>
+    <string name="choose_device_title">选择设备</string>
+    <string name="choose_device_subtitle">请选择要投屏的 Roku 或 AirPlay 设备：</string>
 </resources>

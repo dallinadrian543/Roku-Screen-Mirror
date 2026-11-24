@@ -28,7 +28,10 @@ data class VideoFormat(
     }
 
     /** Rounds down to a multiple of 16 so no encoder silently rejects the size. */
-    fun aligned(): VideoFormat = copy(width = width / 16 * 16, height = height / 16 * 16)
+    fun aligned(): VideoFormat = copy(
+        width = (width / 16 * 16).coerceAtLeast(16),
+        height = (height / 16 * 16).coerceAtLeast(16),
+    )
 
     companion object {
         /** Bounds shared with the settings slider (MirrorSettings.BIT_RATE_*_MBPS). */

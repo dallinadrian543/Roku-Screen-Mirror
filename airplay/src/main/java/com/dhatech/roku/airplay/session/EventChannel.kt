@@ -38,29 +38,34 @@ class EventChannel private constructor(
     private val clock: MirrorClock,
     private val scope: CoroutineScope,
 ) : java.io.Closeable {
+    private val writeLock = Any()
+    private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
     private var writeCounter = 0L
     private var readCounter = 0L
 
     private fun writeFrame(plaintext: ByteArray) {
-        var offset = 0
-        while (offset < plaintext.size) {
-            val length = minOf(MAX_FRAME, plaintext.size - offset)
-            val sizeBytes = byteArrayOf(
-                (length and 0xFF).toByte(),
-                ((length shr 8) and 0xFF).toByte(),
-            )
-            val sealed = ChaChaPolyCipher.seal(
-                keys.writeKey,
-                ChaChaPolyCipher.nonce(writeCounter),
-                plaintext.copyOfRange(offset, offset + length),
-                sizeBytes,
-            )
-            output.write(sizeBytes)
-            output.write(sealed)
-            offset += length
-            writeCounter++
+        synchronized(writeLock) {
+            if (closed.get()) return
+            var offset = 0
+            while (offset < plaintext.size) {
+                val length = minOf(MAX_FRAME, plaintext.size - offset)
+                val sizeBytes = byteArrayOf(
+                    (length and 0xFF).toByte(),
+                    ((length shr 8) and 0xFF).toByte(),
+                )
+                val sealed = ChaChaPolyCipher.seal(
+                    keys.writeKey,
+                    ChaChaPolyCipher.nonce(writeCounter),
+                    plaintext.copyOfRange(offset, offset + length),
+                    sizeBytes,
+                )
+                output.write(sizeBytes)
+                output.write(sealed)
+                offset += length
+                writeCounter++
+            }
+            output.flush()
         }
-        output.flush()
     }
 
     /** Reads one HAP frame; returns the plaintext or null at end of stream. */
@@ -91,6 +96,7 @@ class EventChannel private constructor(
     }
 
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
         runCatching { socket.close() }
         scope.cancel()
     }
@@ -109,21 +115,23 @@ class EventChannel private constructor(
 
     private fun serveLoop() {
         val pending = StringBuilder()
-        while (true) {
+        while (!closed.get()) {
             val plain = readFrame() ?: return
             pending.append(String(plain, Charsets.ISO_8859_1))
-            val request = readRequest(pending) ?: continue
-            pending.setLength(0)
-            pending.append(request.trailing)
+            while (true) {
+                val request = readRequest(pending) ?: break
+                pending.setLength(0)
+                pending.append(request.trailing)
 
-            Log.d(TAG, "<- ${request.method} ${request.path} (CSeq ${request.cseq})")
-            if (request.clockId != null) {
-                clock.reanchorTimeline(request.clockId)
+                Log.d(TAG, "<- ${request.method} ${request.path} (CSeq ${request.cseq})")
+                if (request.clockId != null) {
+                    clock.reanchorTimeline(request.clockId)
+                }
+                writeFrame(
+                    "RTSP/1.0 200 OK\r\nCSeq: ${request.cseq}\r\nContent-Length: 0\r\n\r\n"
+                        .toByteArray(Charsets.ISO_8859_1),
+                )
             }
-            writeFrame(
-                "RTSP/1.0 200 OK\r\nCSeq: ${request.cseq}\r\nContent-Length: 0\r\n\r\n"
-                    .toByteArray(Charsets.ISO_8859_1),
-            )
         }
     }
 

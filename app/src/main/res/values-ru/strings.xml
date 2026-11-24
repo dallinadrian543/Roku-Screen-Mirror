@@ -94,4 +94,8 @@
     <string name="error_pairing_throttled">После неудачных попыток приёмник ограничивает сопряжение. Выключите и снова включите на нём приём AirPlay (или подождите около 30 минут) и повторите.</string>
     <string name="manual_port_auto_chip">Автовыбор порта AirPlay</string>
     <string name="manual_port_auto_summary">Автоматически проверяет порты 7000, 7100, 5000, 49152 и 7001</string>
+    <string name="action_cast_to">Транслировать на %1$s</string>
+    <string name="action_choose_device">Выбрать устройство для трансляции</string>
+    <string name="choose_device_title">Выберите устройство</string>
+    <string name="choose_device_subtitle">Выберите устройство Roku или AirPlay для трансляции:</string>
 </resources>
